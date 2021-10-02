@@ -23,16 +23,17 @@ import cv2
 DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 4000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
-COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255)]
+COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
 
 def speedBetweenPoints(p1, p2) -> Tuple[float, float, float]:
     speed = None
     if p1 and p2:
-        frameDelta = p1.frame - p2.frame
-        xSpeed = (p1.x - p2.x) / frameDelta
-        ySpeed = (p1.y - p2.y) / frameDelta
-        zSpeed = (p1.z - p2.z) / frameDelta
-        speed = (xSpeed, ySpeed, zSpeed)
+        frameDelta = np.abs(p1.frame - p2.frame)
+        if frameDelta > 0:
+            xSpeed = (p1.x - p2.x) / frameDelta
+            ySpeed = (p1.y - p2.y) / frameDelta
+            zSpeed = (p1.z - p2.z) / frameDelta
+            speed = (xSpeed, ySpeed, zSpeed)
     return speed
 
 def distance2dBeetweenPoints(p1, p2):
@@ -70,8 +71,8 @@ class PersonnageData:
 
     def _decreaseFreshness(self):
         self.freshness -= 0.01
-        if self.freshness < 0:
-            self.freshness = 0
+        if self.freshness < 0.01:
+            self.freshness = 0.01
 
     def initializeUid(self, uid):
         if self.uid is None:
@@ -95,7 +96,7 @@ class PersonnageData:
         notTimeout = self.freshness > 0.1 or iteration - self.frame < MAX_MISSING_FRAME_BEFORE_DEAD
         
         # Filter short appearance
-        isGhost = iteration - self.frame > 10 and self.freshness == 0
+        isGhost = iteration - self.frame > 10 and self.freshness <= 0.01
         if isGhost:
                 print("DEBUG: Detected ghost perso #%d." % (self.uid))
 
@@ -117,7 +118,10 @@ class PersonnageData:
         # Idee un indice de confiance relatif à la confiance des autre points
         confidance = 1
         
-        distance = (distance2d + speedDistance / frameDistance) / confidance
+        if frameDistance > 0:
+            distance = (distance2d + speedDistance / frameDistance) / confidance
+        else:
+            distance = (distance2d) / confidance
         #print("DEBUG: Distance between %s and %s => %f" % (self, p, distance))
         #print("DEBUG: Confidance=%f ; Distances => 2d=%f ; speed=%f ; frame=%f" % (confidance, distance2d, speedDistance, frameDistance))
         return distance
@@ -371,7 +375,7 @@ class Personnages3D:
             # # if y < 0: y = 0
             # # if y > 720: y = 720
             cv2.circle(self.black, (y, x), 4, (100, 100, 100), -1)
-            cv2.circle(self.black, (y, x), 6, COLORS[perso.uid % 7], thickness=2)
+            cv2.circle(self.black, (y, x), 6, COLORS[(perso.uid - 1) % 7], thickness=2)
 
     def run(self):
         """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""
@@ -455,13 +459,11 @@ def get_moyenne(points_3D, indice):
 
 if __name__ == '__main__':
 
-    # # for i in range(8):
+    for i in range(5, 9):
+        FICHIER = './json/cap_' + str(i) + '.json'
+        p3d = Personnages3D(FICHIER)
+        p3d.run()
 
-        # # FICHIER = './json/cap_' + str(i) + '.json'
-
-        # # p3d = Personnages3D(FICHIER)
-        # # p3d.run()
-
-    FICHIER = './json/cap_7.json'
-    p3d = Personnages3D(FICHIER)
-    p3d.run()
+    # FICHIER = './json/cap_7.json'
+    # p3d = Personnages3D(FICHIER)
+    # p3d.run()
