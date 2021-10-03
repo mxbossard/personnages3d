@@ -41,6 +41,29 @@ def distance2dBeetweenPoints(p1, p2):
     (x2, y2) = p2
     return ((x1 - x2)**2 + (y1 - y2)**2)**0.5
 
+class PersonnageDistance:
+    frame: int = None
+    x: float = None
+    y: float = None
+    z: float = None
+    xSpeed: float = None
+    ySpeed: float = None
+    zSpeed: float = None
+    color: float = None
+
+    def __init__(self, frame, x, y, z, xSpeed, ySpeed, zSpeed, color):
+        self.frame = frame
+        self.x = x
+        self.y = y
+        self.z = z
+        self.xSpeed = xSpeed
+        self.ySpeed = ySpeed
+        self.zSpeed = zSpeed
+        self.color = color
+
+    def cartesianDistance(self) -> float:
+        return (self.x**2 + self.y**2 + self.z**2)**0.5
+
 class PersonnageData:
     frame: int = 0
     x: float = 0.0
@@ -48,6 +71,7 @@ class PersonnageData:
     z: float = 0.0
     uid: int = None
     speed: tuple = None
+    color: tuple = None
     #absoluteSpeed: float = None
     #direction: float = None
     ancestorSpeed: tuple = None
@@ -102,7 +126,24 @@ class PersonnageData:
 
         return notTimeout and not isGhost
 
-    def distanceTo(self, p):
+    def distanceTo(self, p) -> PersonnageDistance:
+        frameDist = self.frame - p.frame
+        xDist = self.x - p.x
+        yDist = self.y - p.y
+        zDist = self.z - p.z
+        xSpeedDist = None
+        ySpeedDist = None
+        zSpeedDist = None
+        colorDist = None
+        if frameDist and self.speed and p.speed:
+            xSpeedDist = self.speed[0] - p.speed[0]
+            ySpeedDist = self.speed[1] - p.speed[1]
+            zSpeedDist = self.speed[2] - p.speed[2]
+        distance = PersonnageDistance(frameDist, xDist, yDist, zDist, xSpeedDist, ySpeedDist, zSpeedDist, colorDist)
+        return distance
+
+    # deprecated
+    def scoreBetween(self, p):
         if p is None: return sys.maxsize
 
         distance2d = distance2dBeetweenPoints((self.x, self.y), (p.x, p.y))
@@ -179,9 +220,11 @@ def nearestPersonnagesWithFreshness(persoListA: Sequence[PersonnageData], persoL
         for pB in persoListB:
             #relativeConfidance = (pA.freshness / freshnessSumPa + pB.freshness / freshnessSumPb) / 2 + 0.1
             relativeConfidance = (pB.freshness / freshnessSumPb) + 0.1
-            dist = pA.distanceTo(pB) / relativeConfidance
+            #distance = pA.scoreBetween(pB) / relativeConfidance
+            distance = pA.distanceTo(pB)
+            score = distance.cartesianDistance() / relativeConfidance
             distKey = "%d-%d" % (id(pA), id(pB))
-            distanceMap[distKey] = (pA, pB, dist)
+            distanceMap[distKey] = (pA, pB, score)
 
     minDist = None
     minDistTuple = None
