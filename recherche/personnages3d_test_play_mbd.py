@@ -8,11 +8,14 @@ Installation: voir le readme
 
 """
 
+from functools import cmp_to_key
 import os
 import sys
 import json
+import copy
 from time import time, sleep
-from typing import Mapping, Sequence, Tuple
+from types import FunctionType
+from typing import Mapping, MutableSequence, Sequence, Tuple
 
 import numpy as np
 import cv2
@@ -20,9 +23,12 @@ import cv2
 
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
-DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 4000
+DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 1000
+ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 3000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
+MALUS_DISTANCE_SCORE = 1000000
+
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
 
 def speedBetweenPoints(p1, p2) -> Tuple[float, float, float]:
@@ -41,52 +47,28 @@ def distance2dBeetweenPoints(p1, p2):
     (x2, y2) = p2
     return ((x1 - x2)**2 + (y1 - y2)**2)**0.5
 
-class PersonnageDistance:
-    frame: int = None
-    x: float = None
-    y: float = None
-    z: float = None
-    xSpeed: float = None
-    ySpeed: float = None
-    zSpeed: float = None
-    color: float = None
-
-    def __init__(self, frame, x, y, z, xSpeed, ySpeed, zSpeed, color):
-        self.frame = frame
-        self.x = x
-        self.y = y
-        self.z = z
-        self.xSpeed = xSpeed
-        self.ySpeed = ySpeed
-        self.zSpeed = zSpeed
-        self.color = color
-
-    def cartesianDistance(self) -> float:
-        return (self.x**2 + self.y**2 + self.z**2)**0.5
-
 class PersonnageData:
-    frame: int = 0
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    uid: int = None
-    speed: tuple = None
-    color: tuple = None
-    #absoluteSpeed: float = None
-    #direction: float = None
-    ancestorSpeed: tuple = None
-    frameAppearanceCount = 1
-    # Score qui indique l'activite recente du personnage. Proche de 0 si peu actif. Proche de 1 si tres actif.
-    freshness: float = 0.01
 
     def __init__(self, frame, x, y, z):
         self.frame = frame
         self.x = x
         self.y = y
         self.z = z
+        self.uid: int = None
+        self.speed: tuple = None
+        self.color: tuple = None
+        #self.absoluteSpeed: float = None
+        #self.direction: float = None
+        self.ancestorSpeed: tuple = None
+        self.frameAppearanceCount = 1
+        # Score qui indique l'activite recente du personnage. Proche de 0 si peu actif. Proche de 1 si tres actif.
+        self.freshness: float = 0.01
+        self.xHistory: Sequence[float] = []
+        self.yHistory: Sequence[float] = []
+        self.zHistory: Sequence[float] = []
 
     def __str__(self):
-        return f"[Personnage #{self.uid} x={self.x} y={self.y} speed={self.speed} freshness={self.freshness}]"
+        return f"[Personnage #{self.uid} (#{id(self)}) x={self.x} y={self.y} speed={self.speed} freshness={self.freshness}]"
 
     def _increaseFreshness(self):
         self.freshness += 0.01
@@ -111,6 +93,9 @@ class PersonnageData:
             self.frameAppearanceCount = p.frameAppearanceCount + 1
             self.freshness = p.freshness
             self._increaseFreshness()
+            self.xHistory = p.xHistory + [p.x]
+            self.yHistory = p.yHistory + [p.y]
+            self.zHistory = p.zHistory + [p.z]
 
     def decayFreshness(self, iteration):
         if iteration > self.frame + MAX_MISSING_FRAME_BEFORE_DECAY:
@@ -126,23 +111,8 @@ class PersonnageData:
 
         return notTimeout and not isGhost
 
-    def distanceTo(self, p) -> PersonnageDistance:
-        frameDist = self.frame - p.frame
-        xDist = self.x - p.x
-        yDist = self.y - p.y
-        zDist = self.z - p.z
-        xSpeedDist = None
-        ySpeedDist = None
-        zSpeedDist = None
-        colorDist = None
-        if frameDist and self.speed and p.speed:
-            xSpeedDist = self.speed[0] - p.speed[0]
-            ySpeedDist = self.speed[1] - p.speed[1]
-            zSpeedDist = self.speed[2] - p.speed[2]
-        distance = PersonnageDistance(frameDist, xDist, yDist, zDist, xSpeedDist, ySpeedDist, zSpeedDist, colorDist)
-        return distance
 
-    # deprecated
+    # Deprecated
     def scoreBetween(self, p):
         if p is None: return sys.maxsize
 
@@ -170,25 +140,130 @@ class PersonnageData:
     def label(self):
         return "Personnage_%d" % self.uid
 
-# Return (PersonnageData, distance)
-def nearestPersonnage(newPerso, persoList) -> tuple:
-    nearestPerso = None
-    minDistance = None
-    for p in persoList:
-        dist = p.distanceTo(newPerso)
-        if (minDistance is None or dist < minDistance):
-            minDistance = dist
-            nearestPerso = p
 
-    return (nearestPerso, minDistance)
+class PersonnageDistance:
+
+    def __init__(self, p1: PersonnageData, p2: PersonnageData):
+        self.p1: PersonnageData = p1
+        self.p2: PersonnageData = p2
+        self.frame: int = p1.frame - p2.frame
+        self.x: float = p1.x - p2.x
+        self.y: float = p1.y - p2.y
+        self.z: float = p1.z - p2.z
+        if self.frame > 0 and p1.speed and p2.speed:
+            self.xSpeed: float = p1.speed[0] - p2.speed[0]
+            self.ySpeed: float = p1.speed[1] - p2.speed[1]
+            self.zSpeed: float = p1.speed[2] - p2.speed[2]
+        self.color: float = None
+
+    def __str__(self) -> str:
+        #return f"[p1: #{id(self.p1)} p2: #{id(self.p2)} x={self.x} y={self.y} 3d={self.cartesianDistance()}]"
+        return f"[x={self.x} y={self.y} 3d={self.cartesianDistance()}]"
+
+    def cartesianDistance(self) -> float:
+        return (self.x**2 + self.y**2 + self.z**2)**0.5
 
 
+class DistanceMatrix:
+
+    def __init__(self, rows: Sequence[PersonnageData], columns: Sequence[PersonnageData], distanceScorer: FunctionType):
+        self.__matrix: Mapping[int, Mapping[int, PersonnageDistance]] = {}
+        self.__allDistances: MutableSequence[PersonnageDistance] = []
+        self.__sortedDistances = False
+
+        freshnessSumPa = 0
+        for pA in rows:
+            freshnessSumPa += pA.freshness
+        self.rowsFreshnessSum = freshnessSumPa
+
+        freshnessSumPb = 0
+        for pB in columns:
+            freshnessSumPb += pB.freshness
+        self.columnsFreshnessSum = freshnessSumPb
+
+        for pA in rows:
+            self.__matrix[id(pA)] = {}
+            for pB in columns:
+                #relativeConfidance = (pA.freshness / freshnessSumPa + pB.freshness / freshnessSumPb) / 2 + 0.1
+                distance = PersonnageDistance(pA, pB)
+                self.__matrix[id(pA)][id(pB)] = distance
+                self.__allDistances.append(distance)
+
+        def distanceScoreComparator(dist1: PersonnageDistance, dist2: PersonnageDistance):
+            return distanceScorer(dist1, self) - distanceScorer(dist2, self)
+
+        self.__distanceComparator = distanceScoreComparator
+
+
+    def clone(self):
+        clone = copy.copy(self) # shallow copy
+        clone.__allDistances = self.__allDistances[:] # Copy into a new list
+        clone.__matrix = {} # Init a new dict
+        for (key, row) in self.__matrix.items():
+            clone.__matrix[key] = dict(self.__matrix[key]) # Copy into a new dict
+        clone.__sortedDistances = None
+        return clone
+
+    def getDistance(self, column: PersonnageData, row: PersonnageData) -> PersonnageDistance:
+        distance = self.__matrix[id(column)][id(row)]
+        return distance
+
+    def getSortedDistances(self) -> Sequence[PersonnageDistance]:
+        if not self.__sortedDistances:
+            self.__allDistances.sort(key=cmp_to_key(self.__distanceComparator))
+            self.__sortedDistances = True
+            #print("DEBUG: Sorted ditances: [%s]" % ' '.join([ str(x) for x in self.__allDistances ]))
+        return self.__allDistances
+
+    def getNthMinimalDistance(self, nth: int = 0) -> PersonnageDistance: 
+        """Return nth minimal distance in matrix."""
+        sortedDistances = self.getSortedDistances()
+        if nth < len(sortedDistances):
+            return sortedDistances[nth]
+        else:
+            return None
+
+    def _reduceMatrix(self, row: PersonnageData, column: PersonnageData):
+        """Build a new matrix without supplied column and row """
+        #print("DEBUG: reducing matrix containing %d distance(s) in %d row(s) ..." % (len(self.__allDistances), len(self.__matrix)))
+        clone = self.clone()
+
+        for rowKey in list(clone.__matrix.keys()):
+            for colKey in list(clone.__matrix[rowKey].keys()):
+                dist = clone.__matrix[rowKey][colKey]
+                if dist.p1 == row or dist.p2 == column:
+                    clone.__allDistances.remove(dist)
+                    del clone.__matrix[rowKey][colKey]
+
+        del clone.__matrix[id(row)]
+
+        #print("DEBUG: reduced matrix contains %d distance(s) in %d row(s) ..." % (len(clone.__allDistances), len(clone.__matrix)))
+        return clone
+
+    def reduceMatrix(self, distance: PersonnageDistance):
+        return self._reduceMatrix(distance.p1, distance.p2)
+
+def naive2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    return dist.cartesianDistance()
+
+def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    relativeConfidance = (dist.p2.freshness / matrix.columnsFreshnessSum) + 0.1
+    if dist.cartesianDistance() > ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT:
+        # cartesianDistance is greater than we expect => Return a malus
+        return MALUS_DISTANCE_SCORE
+    if dist.cartesianDistance() > DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * dist.frame:
+        # cartesianDistance is greater than we expect => Return a malus
+        return MALUS_DISTANCE_SCORE
+    return dist.cartesianDistance() / relativeConfidance
+
+
+# Deprecated
 # Return (PersonnageDataA, PersonnageDataB, distance)
 def nearestPersonnages(persoListA, persoListB) -> Tuple[PersonnageData, PersonnageData, float]:
     distanceMap = {}
     for pA in persoListA:
         for pB in persoListB:
-            dist = pA.distanceTo(pB)
+            dist = PersonnageDistance(pA, pB).cartesianDistance()
             distKey = "%d-%d" % (id(pA), id(pB))
             distanceMap[distKey] = (pA, pB, dist)
 
@@ -205,6 +280,7 @@ def nearestPersonnages(persoListA, persoListB) -> Tuple[PersonnageData, Personna
 
     return minDistTuple
 
+# Deprecated
 # Relative confidance : Compare each perso freshness to sum of freshnesses
 def nearestPersonnagesWithFreshness(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Tuple[PersonnageData, PersonnageData, float]:
     distanceMap = {}
@@ -221,7 +297,7 @@ def nearestPersonnagesWithFreshness(persoListA: Sequence[PersonnageData], persoL
             #relativeConfidance = (pA.freshness / freshnessSumPa + pB.freshness / freshnessSumPb) / 2 + 0.1
             relativeConfidance = (pB.freshness / freshnessSumPb) + 0.1
             #distance = pA.scoreBetween(pB) / relativeConfidance
-            distance = pA.distanceTo(pB)
+            distance = PersonnageDistance(pA, pB)
             score = distance.cartesianDistance() / relativeConfidance
             distKey = "%d-%d" % (id(pA), id(pB))
             distanceMap[distKey] = (pA, pB, score)
@@ -239,22 +315,66 @@ def nearestPersonnagesWithFreshness(persoListA: Sequence[PersonnageData], persoL
 
     return minDistTuple
 
+# Relative confidance : Compare each perso freshness to sum of freshnesses
+def nearestPersonnagesWithMatrix(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Tuple[PersonnageData, PersonnageData, float]:
+    #print("DEBUG: building distance matrix of (%d x %d) size ..." % (len(persoListA), len(persoListB)))
+    distanceMatrix = DistanceMatrix(persoListA, persoListB, confident2dDistanceScorer)
+    minDistance = distanceMatrix.getNthMinimalDistance(0)
+
+    minDistTuple = (None, None, None)
+    if minDistance is not None:
+        distance = minDistance.cartesianDistance()
+        minDistTuple = (minDistance.p1, minDistance.p2, distance)
+
+    return minDistTuple
+
+def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
+    distanceScorer = confident2dDistanceScorer
+    fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
+
+    # Main path
+    n = 0
+    minimalDistancePath = None
+    minimalDistanceScore = None
+    
+    distanceMatrix = fullDistanceMatrix
+    currentDistancePath = []
+    currentDistanceScore = 0
+    while True:
+        nthDistance = distanceMatrix.getNthMinimalDistance(n)
+        if nthDistance is None:
+            break
+
+        score = distanceScorer(nthDistance, fullDistanceMatrix)
+        if score < MALUS_DISTANCE_SCORE:
+            currentDistanceScore += score
+            currentDistancePath.append(nthDistance)
+
+        distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
+
+    if minimalDistanceScore is None or minimalDistanceScore > currentDistanceScore:
+        minimalDistancePath = currentDistancePath
+
+    return minimalDistancePath
+
+
 class PersonnagesCoordinatesRepo:
-    _maxPersonnages = 0
-    _repo = {}
-    _seenPersoCounter = 0
-    _persoTracker: Mapping[int, PersonnageData] = {}
-    _currentFrame = 0
-    _persoUids = set()
 
     def __init__(self, maxPersonnages: int):
         self.reset()
-        self._maxPersonnages = maxPersonnages
+        self.__maxPersonnages = maxPersonnages
+
+    def reset(self):
+        self.__repo = {}
+        self.__seenPersoCounter = 0
+        self.__persoTracker: Mapping[int, PersonnageData] = {}
+        self.__currentFrame = 0
+        self.__persoUids = set()
 
     def _getIterationRepo(self, iteration: int) -> dict:
-        repo = self._repo.get(iteration, {})
+        repo = self.__repo.get(iteration, {})
         if not repo:
-            self._repo[iteration] = repo
+            self.__repo[iteration] = repo
         return repo
 
     def _getIterationPersonnageData(self, iteration: int) -> list:
@@ -267,55 +387,51 @@ class PersonnagesCoordinatesRepo:
     def _addIterationPersonnageData(self, iteration: int, persoData: PersonnageData):
         persoRepo = self._getIterationPersonnageData(iteration)
         persoRepo.append(persoData)
-        self._persoTracker[persoData.uid] = persoData 
+        self.__persoTracker[persoData.uid] = persoData 
 
     def _newPersoUid(self):
-        self._seenPersoCounter += 1
+        self.__seenPersoCounter += 1
         uid = 1
-        while uid in self._persoUids:
+        while uid in self.__persoUids:
             uid += 1
-        self._persoUids.add(uid)
+        self.__persoUids.add(uid)
         return uid
 
     def _recordNewPerso(self, perso: PersonnageData):
         newUid = self._newPersoUid()
         perso.initializeUid(newUid)
-        self._addIterationPersonnageData(self._currentFrame, perso)
-        print("DEBUG: Recorded new perso %s at frame: %d." % (perso, self._currentFrame))
+        self._addIterationPersonnageData(self.__currentFrame, perso)
+        print("DEBUG: Recorded new perso %s at frame: %d." % (perso, self.__currentFrame))
 
     def _recordPersoUpdate(self, newPerso: PersonnageData, previousPerso: PersonnageData):
         newPerso.successTo(previousPerso)
-        self._addIterationPersonnageData(self._currentFrame, newPerso)
+        self._addIterationPersonnageData(self.__currentFrame, newPerso)
         #print("DEBUG: Recorded perso update %s => %s." % (previousPerso, newPerso))
 
     def _forgetPerso(self, perso: PersonnageData):
         print("DEBUG: Removing perso #%d." % (perso.uid))
-        self._persoUids.discard(perso.uid)
-        self._persoTracker.pop(perso.uid)
+        self.__persoUids.discard(perso.uid)
+        self.__persoTracker.pop(perso.uid)
 
     def _frameCleaning(self, iteration):
-        self._currentFrame = iteration
-        for persoUid in list(self._persoTracker.keys()):
-            perso = self._persoTracker[persoUid]
+        self.__currentFrame = iteration
+        for persoUid in list(self.__persoTracker.keys()):
+            perso = self.__persoTracker[persoUid]
 
             if not perso.isAlive(iteration):
                 self._forgetPerso(perso)
 
-    def reset(self):
-        self._maxPersonnages = 0
-        self._repo = {}
-        self._seenPersoCounter = 0
 
     # def newIteration(self, iteration):
     #     self._currentFrame = iteration
 
     def getAllPersonages(self) -> Sequence[PersonnageData]:
-        return list(self._persoTracker.values())
+        return list(self.__persoTracker.values())
     
     def getCurrentIterationPersonages(self) -> Sequence[PersonnageData]:
         personnages = []
         for perso in self.getAllPersonages():
-            if perso.frame == self._currentFrame:
+            if perso.frame == self.__currentFrame:
                 personnages.append(perso)
         return personnages
 
@@ -336,21 +452,30 @@ class PersonnagesCoordinatesRepo:
         #previousPersos = self._getIterationPersonnageData(iteration - k)
         previousPersos = self.getAllPersonages()
 
-        for i in range(len(newPersos)):
-            (newPerso, previousPerso, distance) = nearestPersonnagesWithFreshness(newPersos, previousPersos)
-            if distance is not None:
-                #print("DEBUG: Minimal distance found: [%f] of perso #%d." % (distance, previousPerso.uid))
-                pass
-            if distance is not None and distance <= DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME:
-                # Same perso
-                self._recordPersoUpdate(newPerso, previousPerso)
-                newPersos.remove(newPerso)
-                previousPersos.remove(previousPerso)
-            else:
-                # No perso are near enough to match
-                #k += 1
-                print("DEBUG: some perso cannot be match: [%d]." % (len(newPersos)))
-                break
+        betterPath = minimalDistanceOverallPathFinder(newPersos, previousPersos)
+        for dist in betterPath:
+            newPerso = dist.p1
+            previousPerso = dist.p2
+            self._recordPersoUpdate(newPerso, previousPerso)
+            newPersos.remove(newPerso)
+
+        # for i in range(len(newPersos)):
+        #     (newPerso, previousPerso, distance) = nearestPersonnagesWithMatrix(newPersos, previousPersos)
+        #     #(newPerso, previousPerso, distance) = nearestPersonnages(newPersos, previousPersos)
+        #     if distance is not None:
+        #         #print("DEBUG: Minimal distance found: [%f] of perso #%d." % (distance, previousPerso.uid))
+        #         pass
+        #     if distance is not None and distance <= DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME:
+        #         # Same perso
+        #         self._recordPersoUpdate(newPerso, previousPerso)
+        #         #print("DEBUG: Removing personnages #%d and #%d ..." % (id(newPerso), id(previousPerso)))
+        #         newPersos.remove(newPerso)
+        #         previousPersos.remove(previousPerso)
+        #     else:
+        #         # No perso are near enough to match
+        #         #k += 1
+        #         print("DEBUG: some perso cannot be match: [%d]." % (len(newPersos)))
+        #         break
             
         if len(newPersos) == 0:
             unknowPersoRemaining = False
@@ -364,25 +489,6 @@ class PersonnagesCoordinatesRepo:
 
         for perso in self.getAllPersonages():
             perso.decayFreshness(iteration)
-
-
-class Personnage:
-    """Permet de stocker facilement les attributs d'un personnage,
-    et de les reset-er.
-    """
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.who = None
-        self.points_3D = None
-        # Les centres sont dans le plan horizontal
-        self.center = [100000]*2
-        # Numéro de la frame de la dernière mise à jour
-        self.last_update = 0
-        self.stable = 0
-
 
 
 class Personnages3D:
@@ -502,7 +608,7 @@ def get_moyenne(points_3D, indice):
 
 if __name__ == '__main__':
 
-    for i in range(5, 9):
+    for i in range(7, 9):
         FICHIER = './json/cap_' + str(i) + '.json'
         p3d = Personnages3D(FICHIER)
         p3d.run()
