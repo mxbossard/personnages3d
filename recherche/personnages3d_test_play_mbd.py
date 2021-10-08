@@ -28,6 +28,7 @@ ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 3000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
 MALUS_DISTANCE_SCORE = 1000000
+MIN_SAMPLE_CONFIRMED_THRESHOLD = 5
 
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
 
@@ -63,9 +64,10 @@ class PersonnageData:
         self.frameAppearanceCount = 1
         # Score qui indique l'activite recente du personnage. Proche de 0 si peu actif. Proche de 1 si tres actif.
         self.freshness: float = 0.01
-        self.xHistory: Sequence[float] = []
-        self.yHistory: Sequence[float] = []
-        self.zHistory: Sequence[float] = []
+        self.xHistory: Sequence[float] = [x]
+        self.yHistory: Sequence[float] = [y]
+        self.zHistory: Sequence[float] = [z]
+        self.confirmed = False
 
     def __str__(self):
         return f"[Personnage #{self.uid} (#{id(self)}) x={self.x} y={self.y} speed={self.speed} freshness={self.freshness}]"
@@ -93,9 +95,10 @@ class PersonnageData:
             self.frameAppearanceCount = p.frameAppearanceCount + 1
             self.freshness = p.freshness
             self._increaseFreshness()
-            self.xHistory = p.xHistory + [p.x]
-            self.yHistory = p.yHistory + [p.y]
-            self.zHistory = p.zHistory + [p.z]
+            self.xHistory = [self.x] + p.xHistory
+            self.yHistory = [self.y] + p.yHistory
+            self.zHistory = [self.z] + p.zHistory
+            self.confirmed = len(self.xHistory) > MIN_SAMPLE_CONFIRMED_THRESHOLD
 
     def decayFreshness(self, iteration):
         if iteration > self.frame + MAX_MISSING_FRAME_BEFORE_DECAY:
@@ -143,13 +146,17 @@ class PersonnageData:
 
 class PersonnageDistance:
 
-    def __init__(self, p1: PersonnageData, p2: PersonnageData):
+    def __init__(self, p1: PersonnageData, p2: PersonnageData, historySize = 10):
         self.p1: PersonnageData = p1
         self.p2: PersonnageData = p2
         self.frame: int = p1.frame - p2.frame
         self.x: float = p1.x - p2.x
         self.y: float = p1.y - p2.y
         self.z: float = p1.z - p2.z
+        self.history = abs(len(p1.xHistory) - len(p2.xHistory))
+        self.xHistory = [p1.x - val for val in p2.xHistory[:historySize]]
+        self.yHistory = [p1.y - val for val in p2.yHistory[:historySize]]
+        self.zHistory = [p1.z - val for val in p2.zHistory[:historySize]]
         if self.frame > 0 and p1.speed and p2.speed:
             self.xSpeed: float = p1.speed[0] - p2.speed[0]
             self.ySpeed: float = p1.speed[1] - p2.speed[1]
@@ -163,6 +170,18 @@ class PersonnageDistance:
     def cartesianDistance(self) -> float:
         return (self.x**2 + self.y**2 + self.z**2)**0.5
 
+    def historicalCartesianDistance(self) -> float:
+        historySize = len(self.xHistory)
+        cartesianDistSum = 0
+        weightSum = 0
+        for k in range(historySize):
+            weight = -2*k/((historySize + 1)**2) + 2/(historySize + 1)
+            weightSum += weight
+            cartesianDistance = (self.xHistory[k]**2 + self.yHistory[k]**2 + self.zHistory[k]**2)**0.5
+            cartesianDistSum += cartesianDistance * weight
+
+        #print("DEBUG: historySize=%d weightSum=%f historical cartesian dist=%f" % (historySize, weightSum, cartesianDistSum))
+        return cartesianDistSum / weightSum
 
 class DistanceMatrix:
 
@@ -218,6 +237,7 @@ class DistanceMatrix:
     def getNthMinimalDistance(self, nth: int = 0) -> PersonnageDistance: 
         """Return nth minimal distance in matrix."""
         sortedDistances = self.getSortedDistances()
+        #print("DEBUG: Getting ditance #%d from: [%s]" % (nth, ' '.join([ str(x) for x in self.__allDistances ])))
         if nth < len(sortedDistances):
             return sortedDistances[nth]
         else:
@@ -256,105 +276,137 @@ def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
         return MALUS_DISTANCE_SCORE
     return dist.cartesianDistance() / relativeConfidance
 
-
-# Deprecated
-# Return (PersonnageDataA, PersonnageDataB, distance)
-def nearestPersonnages(persoListA, persoListB) -> Tuple[PersonnageData, PersonnageData, float]:
-    distanceMap = {}
-    for pA in persoListA:
-        for pB in persoListB:
-            dist = PersonnageDistance(pA, pB).cartesianDistance()
-            distKey = "%d-%d" % (id(pA), id(pB))
-            distanceMap[distKey] = (pA, pB, dist)
-
-    minDist = None
-    minDistTuple = None
-    for distTuple in distanceMap.values():
-        dist = distTuple[2]
-        if minDist is None or minDist > dist:
-            minDist = dist
-            minDistTuple = distTuple
-
-    if minDistTuple is None:
-        minDistTuple = (None, None, None)
-
-    return minDistTuple
-
-# Deprecated
-# Relative confidance : Compare each perso freshness to sum of freshnesses
-def nearestPersonnagesWithFreshness(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Tuple[PersonnageData, PersonnageData, float]:
-    distanceMap = {}
-    freshnessSumPa = 0
-    for pA in persoListA:
-        freshnessSumPa += pA.freshness
-
-    freshnessSumPb = 0
-    for pB in persoListB:
-        freshnessSumPb += pB.freshness
-
-    for pA in persoListA:
-        for pB in persoListB:
-            #relativeConfidance = (pA.freshness / freshnessSumPa + pB.freshness / freshnessSumPb) / 2 + 0.1
-            relativeConfidance = (pB.freshness / freshnessSumPb) + 0.1
-            #distance = pA.scoreBetween(pB) / relativeConfidance
-            distance = PersonnageDistance(pA, pB)
-            score = distance.cartesianDistance() / relativeConfidance
-            distKey = "%d-%d" % (id(pA), id(pB))
-            distanceMap[distKey] = (pA, pB, score)
-
-    minDist = None
-    minDistTuple = None
-    for distTuple in distanceMap.values():
-        dist = distTuple[2]
-        if minDist is None or minDist > dist:
-            minDist = dist
-            minDistTuple = distTuple
-
-    if minDistTuple is None:
-        minDistTuple = (None, None, None)
-
-    return minDistTuple
-
-# Relative confidance : Compare each perso freshness to sum of freshnesses
-def nearestPersonnagesWithMatrix(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Tuple[PersonnageData, PersonnageData, float]:
-    #print("DEBUG: building distance matrix of (%d x %d) size ..." % (len(persoListA), len(persoListB)))
-    distanceMatrix = DistanceMatrix(persoListA, persoListB, confident2dDistanceScorer)
-    minDistance = distanceMatrix.getNthMinimalDistance(0)
-
-    minDistTuple = (None, None, None)
-    if minDistance is not None:
-        distance = minDistance.cartesianDistance()
-        minDistTuple = (minDistance.p1, minDistance.p2, distance)
-
-    return minDistTuple
+def historical2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    relativeConfidance = (dist.p2.freshness / matrix.columnsFreshnessSum) + 0.1
+    if dist.historicalCartesianDistance() > ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT:
+        # cartesianDistance is greater than we expect => Return a malus
+        return MALUS_DISTANCE_SCORE
+    if dist.historicalCartesianDistance() > DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * dist.frame:
+        # cartesianDistance is greater than we expect => Return a malus
+        return MALUS_DISTANCE_SCORE
+    return dist.historicalCartesianDistance() / (dist.history + 1)
 
 def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = confident2dDistanceScorer
+    distanceScorer = historical2dDistanceScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     # Main path
-    n = 0
     minimalDistancePath = None
     minimalDistanceScore = None
+    pathSize = min(len(persoListA), len(persoListB))
+
+    # Initial path scheme: take all first minimal distances
+    # All pathes for a 3x3 matrix are :
+    # 0 0 0
+    # 1 0 0
+    # ...
+    # 8 0 0
+    # 0 1 0
+    # 1 1 0
+    # ...
+    # 8 1 0
+    # ...
+    # 8 3 0
+    currentPathScheme = [0] * pathSize
     
-    distanceMatrix = fullDistanceMatrix
-    currentDistancePath = []
-    currentDistanceScore = 0
-    while True:
-        nthDistance = distanceMatrix.getNthMinimalDistance(n)
-        if nthDistance is None:
-            break
+    exploredAllPath = pathSize == 0
+    while not exploredAllPath:
+        #print("DEBUG: Exploring path: %s." % (currentPathScheme))
 
-        score = distanceScorer(nthDistance, fullDistanceMatrix)
-        if score < MALUS_DISTANCE_SCORE:
-            currentDistanceScore += score
-            currentDistancePath.append(nthDistance)
+        distanceMatrix = fullDistanceMatrix
+        currentDistancePath = []
+        pathFound = False
+        currentDistanceScore = 0
 
-        distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
+        # Walk a path of minimal distance to score it
+        nthDistance = None
+        pathIndex = 0
+        exploredPath = []
+        while pathIndex < pathSize:
+            # Search for next nth distance
 
-    if minimalDistanceScore is None or minimalDistanceScore > currentDistanceScore:
-        minimalDistancePath = currentDistancePath
+            n = currentPathScheme[pathIndex]
+            nthDistance = distanceMatrix.getNthMinimalDistance(n)
+            if nthDistance is None:
+                pathFound = False
+                #print("DEBUG: Found empty [%d] #%dth distance." % (pathIndex, n))
+                # Done testing distance on scheme pathIndex position
+                currentPathScheme[pathIndex] = 0
+                if pathIndex + 1 < pathSize:
+                    # Carry propagation
+                    currentPathScheme[pathIndex + 1] += 1
+                else: 
+                    # Done exploring all schemes
+                    exploredAllPath = True
+                    break
+                continue
+            else:
+                pathFound = True
+                exploredPath.append(n)
+                #print("DEBUG: Found valid [%d] #%dth distance: %s." % (pathIndex, n, nthDistance))
+                # Found a valid distance
+                score = distanceScorer(nthDistance, fullDistanceMatrix)
+                currentDistanceScore += score
+                if minimalDistanceScore is not None and currentDistanceScore > minimalDistanceScore:
+                    # If currentDistanceScore greater than minimalDistanceScore we can throw away this path.
+                    pathFound = False
+                    break
 
+                if score < MALUS_DISTANCE_SCORE:
+                    # Add distance to path only if score lesser than MALUS_DISTANCE_SCORE
+                    currentDistancePath.append(nthDistance)
+
+                distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
+                # Increment path index to complete the path
+                pathIndex += 1
+
+        # Increment scheme path for next path scoring loop
+        if len(currentPathScheme) > 0:
+            currentPathScheme[0] += 1
+
+        # for pathIndex in range(pathSize):
+        #     n = currentPathScheme[pathIndex]
+        #     nthDistance = distanceMatrix.getNthMinimalDistance(n)
+        #     score = distanceScorer(nthDistance, fullDistanceMatrix)
+        #     currentDistanceScore += score
+        #     pathFound = True
+        #     if minimalDistanceScore is not None and currentDistanceScore > minimalDistanceScore:
+        #         # If found a score greater than minimalDistanceScore we can throw away this path.
+        #         pathFound = False
+        #         break
+
+        #     if score < MALUS_DISTANCE_SCORE:
+        #         # Add distance to path only if score lesser than MALUS_DISTANCE_SCORE
+        #         currentDistancePath.append(nthDistance)
+
+        #     distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
+
+        if pathFound:
+            #print("DEBUG: Explored path: %s." % (exploredPath))
+            if minimalDistanceScore is None or minimalDistanceScore > currentDistanceScore:
+                #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
+                minimalDistancePath = currentDistancePath
+                minimalDistanceScore = currentDistanceScore
+
+        # Change path scheme to attempt to find a smalest score
+        # for key, val in enumerate(currentPathScheme):
+        #     if val < (len(persoListA)-key) * (len(persoListB)-key) - 1:
+        #         # increment path
+        #         currentPathScheme[key] += 1
+        #         break
+        #     elif key < len(currentPathScheme) - 1 and currentPathScheme[key + 1] < (len(persoListA)-key-1) * (len(persoListB)-key-1) - 1:
+        #         # retenu au path suivant
+        #         currentPathScheme[key] = 0
+        #         currentPathScheme[key + 1] += 1
+        #         break
+        #     else:
+        #         #print("DEBUG: Finished path exploration.")
+        #         exploredAllPath = True
+
+    if minimalDistancePath is None:
+        minimalDistancePath = []
+
+    print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
     return minimalDistancePath
 
 
@@ -524,7 +576,10 @@ class Personnages3D:
             # # if y < 0: y = 0
             # # if y > 720: y = 720
             cv2.circle(self.black, (y, x), 4, (100, 100, 100), -1)
-            cv2.circle(self.black, (y, x), 6, COLORS[(perso.uid - 1) % 7], thickness=2)
+            color = (128,128,128)
+            if perso.confirmed:
+                color = COLORS[(perso.uid - 1) % 7]
+            cv2.circle(self.black, (y, x), 6, color, thickness=2)
 
     def run(self):
         """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""
@@ -608,7 +663,7 @@ def get_moyenne(points_3D, indice):
 
 if __name__ == '__main__':
 
-    for i in range(7, 9):
+    for i in range(7, 8):
         FICHIER = './json/cap_' + str(i) + '.json'
         p3d = Personnages3D(FICHIER)
         p3d.run()
