@@ -23,8 +23,10 @@ import cv2
 
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
-DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 1000
-ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 3000
+DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
+ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 5000
+ABSOLUTE_MAXIMUM_SPEED = DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME
+ABSOLUTE_MAXIMUM_ACCELERATION = 300
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
 MALUS_DISTANCE_SCORE = 1000000
@@ -32,45 +34,63 @@ MIN_SAMPLE_CONFIRMED_THRESHOLD = 5
 
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
 
-def speedBetweenPoints(p1, p2) -> Tuple[float, float, float]:
-    speed = None
-    if p1 and p2:
-        frameDelta = np.abs(p1.frame - p2.frame)
-        if frameDelta > 0:
-            xSpeed = (p1.x - p2.x) / frameDelta
-            ySpeed = (p1.y - p2.y) / frameDelta
-            zSpeed = (p1.z - p2.z) / frameDelta
-            speed = (xSpeed, ySpeed, zSpeed)
-    return speed
+def vectorNorme(vector: Tuple[float, float, float]) -> float:
+    if vector is None:
+        return 0
+    return ((vector[0])**2 + (vector[1])**2 + (vector[2])**2)**0.5
 
-def distance2dBeetweenPoints(p1, p2):
-    (x1, y1) = p1
-    (x2, y2) = p2
-    return ((x1 - x2)**2 + (y1 - y2)**2)**0.5
+def vectorDelta(vector1: Tuple[float, float, float], vector2: Tuple[float, float, float], frameDelta = 1) -> Tuple[float, float, float]:
+    if frameDelta == 0:
+        #FIXME: is it a good response ?
+        return (0, 0, 0)
+    return ((vector1[0]-vector2[0]) / frameDelta, (vector1[1]-vector2[1]) / frameDelta, (vector1[2]-vector2[2]) / frameDelta)
+
+def smoothCartesianCoordinate(coordinatesList: Sequence[Tuple[float, float, float]], history:int, windowSize:int) -> Tuple[float, float, float]:
+    # coordinate smoothing algorithm: averaging data
+    xSmoothed = 0
+    ySoothed = 0
+    zSmoothed = 0
+
+    if len(coordinatesList) > 0:
+        coordsCount = 0
+        for coords in coordinatesList[history:history + windowSize]:
+            xSmoothed += coords[0]
+            ySoothed += coords[1]
+            zSmoothed += coords[2]
+            coordsCount += 1
+
+        xSmoothed /= coordsCount
+        ySoothed /= coordsCount
+        zSmoothed /= coordsCount
+    
+    return (xSmoothed, ySoothed, zSmoothed)
 
 class PersonnageData:
 
-    def __init__(self, frame, x, y, z):
+    def __init__(self, frame, x, y, z, smoothingWindow=3):
         self.frame = frame
-        self.x = x
-        self.y = y
-        self.z = z
+        self.coordinate = (x, y, z) # Cartesian coordinate
         self.uid: int = None
-        self.speed: tuple = None
         self.color: tuple = None
-        #self.absoluteSpeed: float = None
-        #self.direction: float = None
-        self.ancestorSpeed: tuple = None
         self.frameAppearanceCount = 1
         # Score qui indique l'activite recente du personnage. Proche de 0 si peu actif. Proche de 1 si tres actif.
         self.freshness: float = 0.01
-        self.xHistory: Sequence[float] = [x]
-        self.yHistory: Sequence[float] = [y]
-        self.zHistory: Sequence[float] = [z]
+        self.frameHistory = [frame]
+        self.coordinatesHistory: Sequence[Tuple[float, float, float]] = [self.coordinate]
+        self.smoothingWindow = smoothingWindow
+        self.smoothedCoordinatesHistory: Sequence[Tuple[float, float, float]] = [self.coordinate]
         self.confirmed = False
+        self.smoothedSpeedHistory = []
+        self.smoothedAccelerationHistory = []
 
     def __str__(self):
-        return f"[Personnage #{self.uid} (#{id(self)}) x={self.x} y={self.y} speed={self.speed} freshness={self.freshness}]"
+        data = ""
+        if len(self.smoothedSpeedHistory) > 0:
+            data += f"speed={self.smoothedSpeedHistory[0]} "
+        if len(self.smoothedAccelerationHistory) > 0:
+            data += f"accel={self.smoothedAccelerationHistory[0]} "
+
+        return f"[Personnage #{self.uid} instantCoord={self.coordinate} coord={self.smoothedCoordinatesHistory[0]} {data}]"
 
     def _increaseFreshness(self):
         self.freshness += 0.01
@@ -86,19 +106,38 @@ class PersonnageData:
         if self.uid is None:
             self.uid = uid
 
-    def successTo(self, p):
+    def getSoothedCoordinates(self, history:int=0) -> Tuple[float, float, float]:
+        return smoothCartesianCoordinate(self.coordinatesHistory, history, self.smoothingWindow)
+
+    def succeedTo(self, p):
         if p is not None:
-            if p.speed is not None:
-                self.ancestorSpeed = p.speed
             self.uid = p.uid
-            self.speed = speedBetweenPoints(self, p)
             self.frameAppearanceCount = p.frameAppearanceCount + 1
             self.freshness = p.freshness
             self._increaseFreshness()
-            self.xHistory = [self.x] + p.xHistory
-            self.yHistory = [self.y] + p.yHistory
-            self.zHistory = [self.z] + p.zHistory
-            self.confirmed = len(self.xHistory) > MIN_SAMPLE_CONFIRMED_THRESHOLD
+
+            # Historical data
+            self.frameHistory = self.frameHistory + p.frameHistory
+            #print("DEBUG: Frame history: %s." % (self.frameHistory))
+            self.coordinatesHistory = self.coordinatesHistory + p.coordinatesHistory
+
+            smoothedCoordinate = smoothCartesianCoordinate(self.coordinatesHistory, 0, self.smoothingWindow)
+            self.smoothedCoordinatesHistory.insert(0, smoothedCoordinate)
+
+            if (len(p.coordinatesHistory) >= p.smoothingWindow):
+                frameDelta = self.frameHistory[0] - self.frameHistory[1]
+                smoothedSpeed = vectorDelta(self.coordinate, p.smoothedCoordinatesHistory[0], frameDelta)
+                self.smoothedSpeedHistory = [smoothedSpeed] + p.smoothedSpeedHistory # insert at list start
+                #print("DEBUG: smoothedSpeedHistory: %s." % (self.smoothedSpeedHistory))
+            
+            if (len(p.coordinatesHistory) > p.smoothingWindow):
+                smoothedAcceleration = vectorDelta(self.smoothedSpeedHistory[0], p.smoothedSpeedHistory[0], frameDelta)
+                self.smoothedAccelerationHistory = [smoothedAcceleration] + p.smoothedAccelerationHistory # insert at list start
+
+            #FIXME: confirmed based on frame size + not to hold frames
+            self.confirmed = len(self.frameHistory) > MIN_SAMPLE_CONFIRMED_THRESHOLD
+
+            print("DEBUG: Perso succession: %s." % (self))
 
     def decayFreshness(self, iteration):
         if iteration > self.frame + MAX_MISSING_FRAME_BEFORE_DECAY:
@@ -114,73 +153,61 @@ class PersonnageData:
 
         return notTimeout and not isGhost
 
-
-    # Deprecated
-    def scoreBetween(self, p):
-        if p is None: return sys.maxsize
-
-        distance2d = distance2dBeetweenPoints((self.x, self.y), (p.x, p.y))
-        speedDistance = 0
-        hypoteticSpeed = speedBetweenPoints(self, p)
-        if hypoteticSpeed and p.ancestorSpeed:
-            speedDistance = distance2dBeetweenPoints((hypoteticSpeed[0], hypoteticSpeed[1]), (p.ancestorSpeed[0], p.ancestorSpeed[1]))
-        frameDistance = self.frame - p.frame
-
-        #confidance = np.log10(p.frameAppearanceCount + 1)
-        #confidance = 0.1 + p.freshness
-        #confidance = 1.0 / (1.0 - np.log(p.freshness))
-        # Idee un indice de confiance relatif à la confiance des autre points
-        confidance = 1
-        
-        if frameDistance > 0:
-            distance = (distance2d + speedDistance / frameDistance) / confidance
-        else:
-            distance = (distance2d) / confidance
-        #print("DEBUG: Distance between %s and %s => %f" % (self, p, distance))
-        #print("DEBUG: Confidance=%f ; Distances => 2d=%f ; speed=%f ; frame=%f" % (confidance, distance2d, speedDistance, frameDistance))
-        return distance
-
     def label(self):
         return "Personnage_%d" % self.uid
 
 
 class PersonnageDistance:
 
-    def __init__(self, p1: PersonnageData, p2: PersonnageData, historySize = 10):
+    def __init__(self, p1: PersonnageData, p2: PersonnageData, historySize = 3):
         self.p1: PersonnageData = p1
         self.p2: PersonnageData = p2
         self.frame: int = p1.frame - p2.frame
-        self.x: float = p1.x - p2.x
-        self.y: float = p1.y - p2.y
-        self.z: float = p1.z - p2.z
-        self.history = abs(len(p1.xHistory) - len(p2.xHistory))
-        self.xHistory = [p1.x - val for val in p2.xHistory[:historySize]]
-        self.yHistory = [p1.y - val for val in p2.yHistory[:historySize]]
-        self.zHistory = [p1.z - val for val in p2.zHistory[:historySize]]
-        if self.frame > 0 and p1.speed and p2.speed:
-            self.xSpeed: float = p1.speed[0] - p2.speed[0]
-            self.ySpeed: float = p1.speed[1] - p2.speed[1]
-            self.zSpeed: float = p1.speed[2] - p2.speed[2]
+        self.distanceVector = vectorDelta(p1.coordinate, p2.coordinate, 1)
+        self.history = abs(len(p1.frameHistory) - len(p2.frameHistory))
         self.color: float = None
 
+        # Non symetric distance history: only distance from p1 to p2 history
+        self.speedVector = None
+        self.accelerationVector = None
+
+        if self.frame > 0 and len(p2.smoothedCoordinatesHistory) > 0:
+            self.speedVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], self.frame)
+            #self.distanceVectorHistory = [ vectorDelta(p1.coordinate, p2Coordinate, self.frame) for p2Coordinate in p2.smoothedCoordinatesHistory[:historySize] ]
+        if self.speedVector is not None and len(p2.smoothedSpeedHistory) > 0:
+            self.accelerationVector = vectorDelta(self.speedVector, p2.smoothedSpeedHistory[0], self.frame)
+            #self.speedVectorHistory = [ vectorDelta(p1HypotheticSpeed, p2Speed, 1) for p2Speed in p2.smoothedSpeedHistory[:historySize] ]
+
+        #self.accelerationVectorHistory = [ vectorDelta(p1.coordinate, p2Accel, 1) for p2Accel in p2.smoothedAccelerationHistory[:historySize] ]
+
     def __str__(self) -> str:
-        #return f"[p1: #{id(self.p1)} p2: #{id(self.p2)} x={self.x} y={self.y} 3d={self.cartesianDistance()}]"
-        return f"[x={self.x} y={self.y} 3d={self.cartesianDistance()}]"
+        return f"[Distance vector={self.distanceVector} norme={self.cartesianDistance()}]"
+
+    def isPossible(self) -> bool:
+        # return self.cartesianDistance() < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
+        #     and self.cartesianDistance() < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame
+        return self.accelerationVector and abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION \
+            or self.speedVector and abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED \
+            or abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
+            or abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT
 
     def cartesianDistance(self) -> float:
-        return (self.x**2 + self.y**2 + self.z**2)**0.5
+        return vectorNorme(self.distanceVector)
 
+    # Deprecated
     def historicalCartesianDistance(self) -> float:
-        historySize = len(self.xHistory)
+        historySize = len(self.distanceVector)
         cartesianDistSum = 0
         weightSum = 0
-        for k in range(historySize):
+        for k in range(len(self.distanceVectorHistory)):
             weight = -2*k/((historySize + 1)**2) + 2/(historySize + 1)
             weightSum += weight
-            cartesianDistance = (self.xHistory[k]**2 + self.yHistory[k]**2 + self.zHistory[k]**2)**0.5
+            cartesianDistance = vectorNorme(self.distanceVectorHistory[k])
             cartesianDistSum += cartesianDistance * weight
 
         #print("DEBUG: historySize=%d weightSum=%f historical cartesian dist=%f" % (historySize, weightSum, cartesianDistSum))
+        if weightSum == 0:
+            return cartesianDistSum
         return cartesianDistSum / weightSum
 
 class DistanceMatrix:
@@ -206,7 +233,8 @@ class DistanceMatrix:
                 #relativeConfidance = (pA.freshness / freshnessSumPa + pB.freshness / freshnessSumPb) / 2 + 0.1
                 distance = PersonnageDistance(pA, pB)
                 self.__matrix[id(pA)][id(pB)] = distance
-                self.__allDistances.append(distance)
+                if distance.isPossible():
+                    self.__allDistances.append(distance)
 
         def distanceScoreComparator(dist1: PersonnageDistance, dist2: PersonnageDistance):
             return distanceScorer(dist1, self) - distanceScorer(dist2, self)
@@ -252,7 +280,8 @@ class DistanceMatrix:
             for colKey in list(clone.__matrix[rowKey].keys()):
                 dist = clone.__matrix[rowKey][colKey]
                 if dist.p1 == row or dist.p2 == column:
-                    clone.__allDistances.remove(dist)
+                    if dist in clone.__allDistances:
+                        clone.__allDistances.remove(dist)
                     del clone.__matrix[rowKey][colKey]
 
         del clone.__matrix[id(row)]
@@ -268,26 +297,13 @@ def naive2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
 
 def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     relativeConfidance = (dist.p2.freshness / matrix.columnsFreshnessSum) + 0.1
-    if dist.cartesianDistance() > ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT:
-        # cartesianDistance is greater than we expect => Return a malus
-        return MALUS_DISTANCE_SCORE
-    if dist.cartesianDistance() > DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * dist.frame:
-        # cartesianDistance is greater than we expect => Return a malus
-        return MALUS_DISTANCE_SCORE
     return dist.cartesianDistance() / relativeConfidance
 
 def historical2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
-    relativeConfidance = (dist.p2.freshness / matrix.columnsFreshnessSum) + 0.1
-    if dist.historicalCartesianDistance() > ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT:
-        # cartesianDistance is greater than we expect => Return a malus
-        return MALUS_DISTANCE_SCORE
-    if dist.historicalCartesianDistance() > DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * dist.frame:
-        # cartesianDistance is greater than we expect => Return a malus
-        return MALUS_DISTANCE_SCORE
-    return dist.historicalCartesianDistance() / (dist.history + 1)
+    return dist.cartesianDistance() / (dist.history + 1)
 
 def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = historical2dDistanceScorer
+    distanceScorer = naive2dDistanceScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     # Main path
@@ -364,44 +380,12 @@ def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], perso
         if len(currentPathScheme) > 0:
             currentPathScheme[0] += 1
 
-        # for pathIndex in range(pathSize):
-        #     n = currentPathScheme[pathIndex]
-        #     nthDistance = distanceMatrix.getNthMinimalDistance(n)
-        #     score = distanceScorer(nthDistance, fullDistanceMatrix)
-        #     currentDistanceScore += score
-        #     pathFound = True
-        #     if minimalDistanceScore is not None and currentDistanceScore > minimalDistanceScore:
-        #         # If found a score greater than minimalDistanceScore we can throw away this path.
-        #         pathFound = False
-        #         break
-
-        #     if score < MALUS_DISTANCE_SCORE:
-        #         # Add distance to path only if score lesser than MALUS_DISTANCE_SCORE
-        #         currentDistancePath.append(nthDistance)
-
-        #     distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
-
         if pathFound:
             #print("DEBUG: Explored path: %s." % (exploredPath))
             if minimalDistanceScore is None or minimalDistanceScore > currentDistanceScore:
                 #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
                 minimalDistancePath = currentDistancePath
                 minimalDistanceScore = currentDistanceScore
-
-        # Change path scheme to attempt to find a smalest score
-        # for key, val in enumerate(currentPathScheme):
-        #     if val < (len(persoListA)-key) * (len(persoListB)-key) - 1:
-        #         # increment path
-        #         currentPathScheme[key] += 1
-        #         break
-        #     elif key < len(currentPathScheme) - 1 and currentPathScheme[key + 1] < (len(persoListA)-key-1) * (len(persoListB)-key-1) - 1:
-        #         # retenu au path suivant
-        #         currentPathScheme[key] = 0
-        #         currentPathScheme[key + 1] += 1
-        #         break
-        #     else:
-        #         #print("DEBUG: Finished path exploration.")
-        #         exploredAllPath = True
 
     if minimalDistancePath is None:
         minimalDistancePath = []
@@ -456,7 +440,7 @@ class PersonnagesCoordinatesRepo:
         print("DEBUG: Recorded new perso %s at frame: %d." % (perso, self.__currentFrame))
 
     def _recordPersoUpdate(self, newPerso: PersonnageData, previousPerso: PersonnageData):
-        newPerso.successTo(previousPerso)
+        newPerso.succeedTo(previousPerso)
         self._addIterationPersonnageData(self.__currentFrame, newPerso)
         #print("DEBUG: Recorded perso update %s => %s." % (previousPerso, newPerso))
 
@@ -511,24 +495,6 @@ class PersonnagesCoordinatesRepo:
             self._recordPersoUpdate(newPerso, previousPerso)
             newPersos.remove(newPerso)
 
-        # for i in range(len(newPersos)):
-        #     (newPerso, previousPerso, distance) = nearestPersonnagesWithMatrix(newPersos, previousPersos)
-        #     #(newPerso, previousPerso, distance) = nearestPersonnages(newPersos, previousPersos)
-        #     if distance is not None:
-        #         #print("DEBUG: Minimal distance found: [%f] of perso #%d." % (distance, previousPerso.uid))
-        #         pass
-        #     if distance is not None and distance <= DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME:
-        #         # Same perso
-        #         self._recordPersoUpdate(newPerso, previousPerso)
-        #         #print("DEBUG: Removing personnages #%d and #%d ..." % (id(newPerso), id(previousPerso)))
-        #         newPersos.remove(newPerso)
-        #         previousPersos.remove(previousPerso)
-        #     else:
-        #         # No perso are near enough to match
-        #         #k += 1
-        #         print("DEBUG: some perso cannot be match: [%d]." % (len(newPersos)))
-        #         break
-            
         if len(newPersos) == 0:
             unknowPersoRemaining = False
         
@@ -568,11 +534,11 @@ class Personnages3D:
         # # self.black = np.zeros((720, 1280, 3), dtype = "uint8")
         cv2.line(self.black, (0, 360), (1280, 360), (255, 255, 255), 2)
         for perso in self._repo.getCurrentIterationPersonages():
-            #print("DEBUG: coord #%d : (%f, %f)" % (perso.uid, perso.x, perso.y))
-            x = 360 + int(perso.x*160/1000)
+            #print("DEBUG: coord #%d : %s" % (perso.uid, perso.coordinate))
+            x = 360 + int(perso.coordinate[0]*160/1000)
             # # if x < 0: x = 0
             # # if x > 1280: x = 1280
-            y = int(perso.y*160/1000)
+            y = int(perso.coordinate[1]*160/1000)
             # # if y < 0: y = 0
             # # if y > 720: y = 720
             cv2.circle(self.black, (y, x), 4, (100, 100, 100), -1)
