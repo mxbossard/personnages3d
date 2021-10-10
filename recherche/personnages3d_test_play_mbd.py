@@ -24,9 +24,9 @@ import cv2
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
 DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
-ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 5000
+ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 1500
 ABSOLUTE_MAXIMUM_SPEED = DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME
-ABSOLUTE_MAXIMUM_ACCELERATION = 300
+ABSOLUTE_MAXIMUM_ACCELERATION = 250
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
 MALUS_DISTANCE_SCORE = 1000000
@@ -65,9 +65,21 @@ def smoothCartesianCoordinate(coordinatesList: Sequence[Tuple[float, float, floa
     
     return (xSmoothed, ySoothed, zSmoothed)
 
+def weightedScore(*scores: float) -> float:
+    scoreCount = len(scores)
+    if scoreCount == 0:
+        return None
+    scoreSum = 0
+    weightSum = 0
+    for k, score in enumerate(scores):
+        weight = -2*k/((scoreCount + 1)**2) + 2/(scoreCount + 1)
+        weightSum += weight
+        scoreSum += score * weight
+    return scoreSum / weightSum
+
 class PersonnageData:
 
-    def __init__(self, frame, x, y, z, smoothingWindow=3):
+    def __init__(self, frame, x, y, z, smoothingWindow=5):
         self.frame = frame
         self.coordinate = (x, y, z) # Cartesian coordinate
         self.uid: int = None
@@ -159,11 +171,13 @@ class PersonnageData:
 
 class PersonnageDistance:
 
-    def __init__(self, p1: PersonnageData, p2: PersonnageData, historySize = 3):
+    def __init__(self, p1: PersonnageData, p2: PersonnageData):
+        """Asymetric distance: from new personnage (p1) to historical personnage (p2)."""
         self.p1: PersonnageData = p1
         self.p2: PersonnageData = p2
         self.frame: int = p1.frame - p2.frame
-        self.distanceVector = vectorDelta(p1.coordinate, p2.coordinate, 1)
+        p1SmoothedCoordinate = smoothCartesianCoordinate([p1.coordinate] + p2.coordinatesHistory, 0, p1.smoothingWindow)
+        self.distanceVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], 1)
         self.history = abs(len(p1.frameHistory) - len(p2.frameHistory))
         self.color: float = None
 
@@ -184,15 +198,20 @@ class PersonnageDistance:
         return f"[Distance vector={self.distanceVector} norme={self.cartesianDistance()}]"
 
     def isPossible(self) -> bool:
-        # return self.cartesianDistance() < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
-        #     and self.cartesianDistance() < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame
-        return self.accelerationVector and abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION \
-            or self.speedVector and abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED \
-            or abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
-            or abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT
+        return (self.accelerationVector is None or abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION) \
+            and abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
+            and abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
+            #and (self.speedVector is None or abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED) \
 
     def cartesianDistance(self) -> float:
         return vectorNorme(self.distanceVector)
+
+    def speedDistance(self) -> float:
+        ancestorSpeedVector = (0, 0, 0)
+        if self.speedVector is not None and len(self.p2.smoothedSpeedHistory) > 0:
+            ancestorSpeedVector = self.p2.smoothedSpeedHistory[0]
+        
+        return vectorNorme(vectorDelta(self.speedVector, ancestorSpeedVector, 1))
 
     # Deprecated
     def historicalCartesianDistance(self) -> float:
@@ -302,8 +321,22 @@ def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
 def historical2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     return dist.cartesianDistance() / (dist.history + 1)
 
+def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    cartesianDist = dist.cartesianDistance()
+    speedDist = dist.speedDistance()
+    historySize = len(dist.p1.frameHistory) + len(dist.p2.frameHistory)
+    historyScore = max(0, 1000 - np.log2(historySize)*100)
+    freshness = 0
+    for frame in dist.p2.frameHistory[:100]:
+        if frame > dist.p1.frame - 100:
+            freshness += 1
+    freshnessScore = max(0, 1000 - freshness*10)
+    score = weightedScore(cartesianDist, historyScore, freshnessScore, speedDist)
+    print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
+    return score
+
 def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = naive2dDistanceScorer
+    distanceScorer = multidimensionalScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     # Main path
@@ -347,6 +380,10 @@ def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], perso
                 pathFound = False
                 #print("DEBUG: Found empty [%d] #%dth distance." % (pathIndex, n))
                 # Done testing distance on scheme pathIndex position
+                if n == 0:
+                    # No minimal distance exists
+                    exploredAllPath = True
+                    break
                 currentPathScheme[pathIndex] = 0
                 if pathIndex + 1 < pathSize:
                     # Carry propagation
@@ -354,6 +391,7 @@ def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], perso
                 else: 
                     # Done exploring all schemes
                     exploredAllPath = True
+                    #print("DEBUG: Done exploring all schemes.")
                     break
                 continue
             else:
