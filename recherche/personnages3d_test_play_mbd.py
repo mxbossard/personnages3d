@@ -23,10 +23,11 @@ import cv2
 
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
-DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
-ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT = 1500
-ABSOLUTE_MAXIMUM_SPEED = DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME
-ABSOLUTE_MAXIMUM_ACCELERATION = 250
+#DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
+SMOOTHING_WINDOW_SIZE = 3
+ABSOLUTE_MAXIMUM_DISTANCE = 3000
+ABSOLUTE_MAXIMUM_SPEED = 400
+ABSOLUTE_MAXIMUM_ACCELERATION = 150
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
 MALUS_DISTANCE_SCORE = 1000000
@@ -79,7 +80,7 @@ def weightedScore(*scores: float) -> float:
 
 class PersonnageData:
 
-    def __init__(self, frame, x, y, z, smoothingWindow=5):
+    def __init__(self, frame, x, y, z, smoothingWindow=SMOOTHING_WINDOW_SIZE):
         self.frame = frame
         self.coordinate = (x, y, z) # Cartesian coordinate
         self.uid: int = None
@@ -176,46 +177,62 @@ class PersonnageDistance:
         self.p1: PersonnageData = p1
         self.p2: PersonnageData = p2
         self.frame: int = p1.frame - p2.frame
-        p1SmoothedCoordinate = smoothCartesianCoordinate([p1.coordinate] + p2.coordinatesHistory, 0, p1.smoothingWindow)
-        self.distanceVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], 1)
+        self.p1SmoothedCoordinate = smoothCartesianCoordinate([p1.coordinate] + p2.coordinatesHistory, 0, p1.smoothingWindow)
+        self.p2SmoothedCoordinate = p2.smoothedCoordinatesHistory[0]
+        self.instantDistanceVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], 1)
+        self.smoothedDistanceVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, 1)
         self.history = abs(len(p1.frameHistory) - len(p2.frameHistory))
         self.color: float = None
 
         # Non symetric distance history: only distance from p1 to p2 history
-        self.speedVector = None
-        self.accelerationVector = None
+        self.instantSpeedVector = None
+        self.smoothedSpeedVector = None
+        self.instantAccelerationVector = None
+        self.smoothedAccelerationVector = None
 
-        if self.frame > 0 and len(p2.smoothedCoordinatesHistory) > 0:
-            self.speedVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], self.frame)
+        if self.frame > 0:
+            self.instantSpeedVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], self.frame)
+            self.smoothedSpeedVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, self.frame)
             #self.distanceVectorHistory = [ vectorDelta(p1.coordinate, p2Coordinate, self.frame) for p2Coordinate in p2.smoothedCoordinatesHistory[:historySize] ]
-        if self.speedVector is not None and len(p2.smoothedSpeedHistory) > 0:
-            self.accelerationVector = vectorDelta(self.speedVector, p2.smoothedSpeedHistory[0], self.frame)
+        if self.instantSpeedVector is not None and len(p2.smoothedSpeedHistory) > 0:
+            self.instantAccelerationVector = vectorDelta(self.instantSpeedVector, p2.smoothedSpeedHistory[0], self.frame)
+            self.smoothedAccelerationVector = vectorDelta(self.smoothedSpeedVector, p2.smoothedSpeedHistory[0], self.frame)
             #self.speedVectorHistory = [ vectorDelta(p1HypotheticSpeed, p2Speed, 1) for p2Speed in p2.smoothedSpeedHistory[:historySize] ]
 
         #self.accelerationVectorHistory = [ vectorDelta(p1.coordinate, p2Accel, 1) for p2Accel in p2.smoothedAccelerationHistory[:historySize] ]
 
     def __str__(self) -> str:
-        return f"[Distance vector={self.distanceVector} norme={self.cartesianDistance()}]"
+        return f"[Distance vector={self.instantDistanceVector} norme={self.cartesianDistance()}]"
 
     def isPossible(self) -> bool:
-        return (self.accelerationVector is None or abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION) \
-            and abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
-            and abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
-            #and (self.speedVector is None or abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED) \
+        # return (self.accelerationVector is None or abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION) \
+        #     and abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
+        #     and abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
+        #     and (self.speedVector is None or abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED) \
+        
+        isPossible = abs(vectorNorme(self.smoothedSpeedVector)) < ABSOLUTE_MAXIMUM_SPEED and abs(vectorNorme(self.smoothedDistanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE
+        if self.smoothedAccelerationVector is not None:
+            return isPossible and abs(vectorNorme(self.smoothedAccelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION
+        return isPossible
 
     def cartesianDistance(self) -> float:
-        return vectorNorme(self.distanceVector)
+        return vectorNorme(self.smoothedDistanceVector)
 
     def speedDistance(self) -> float:
         ancestorSpeedVector = (0, 0, 0)
-        if self.speedVector is not None and len(self.p2.smoothedSpeedHistory) > 0:
-            ancestorSpeedVector = self.p2.smoothedSpeedHistory[0]
-        
-        return vectorNorme(vectorDelta(self.speedVector, ancestorSpeedVector, 1))
+        if self.smoothedSpeedVector is not None and len(self.p2.smoothedSpeedHistory) > 0:
+             ancestorSpeedVector = self.p2.smoothedSpeedHistory[0]
+        return vectorNorme(vectorDelta(self.smoothedSpeedVector, ancestorSpeedVector, self.frame))
+
+    def accelerationDistance(self) -> float:
+        ancestorAccelerationVector = (0, 0, 0)
+        if self.smoothedAccelerationVector is not None and len(self.p2.smoothedAccelerationHistory) > 0:
+             ancestorAccelerationVector = self.p2.smoothedAccelerationHistory[0]
+        return vectorNorme(vectorDelta(self.smoothedAccelerationVector, ancestorAccelerationVector, self.frame))
 
     # Deprecated
     def historicalCartesianDistance(self) -> float:
-        historySize = len(self.distanceVector)
+        historySize = len(self.instantDistanceVector)
         cartesianDistSum = 0
         weightSum = 0
         for k in range(len(self.distanceVectorHistory)):
@@ -331,7 +348,8 @@ def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
         if frame > dist.p1.frame - 100:
             freshness += 1
     freshnessScore = max(0, 1000 - freshness*10)
-    score = weightedScore(cartesianDist, historyScore, freshnessScore, speedDist)
+    #score = weightedScore(historyScore, freshnessScore, cartesianDist, speedDist)
+    score = weightedScore(cartesianDist, speedDist, historyScore, freshnessScore, )
     print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
     return score
 
