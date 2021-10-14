@@ -6,6 +6,11 @@ Reconnaissance des personnages à partir d'un json
 Vous ne devez modifier que ce fichier
 Installation: voir le readme
 
+TODO:
+- Vérifier l'algo de recherche de la distance minimum
+- Forger un vrai bon score de fraicheur/historique
+- Vérifier les calculs de vitesse et d'accélération
+
 """
 
 from functools import cmp_to_key
@@ -24,13 +29,15 @@ import cv2
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
 #DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
-SMOOTHING_WINDOW_SIZE = 3
-ABSOLUTE_MAXIMUM_DISTANCE = 3000
-ABSOLUTE_MAXIMUM_SPEED = 400
-ABSOLUTE_MAXIMUM_ACCELERATION = 150
+SMOOTHING_WINDOW_SIZE = 5
+ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE = 400
+ABSOLUTE_MAXIMUM_SMOOTHED_SPEED = 300
+ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION = 500
+ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 10000
+ABSOLUTE_MAXIMUM_INSTANT_SPEED = 10000
+ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 700
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
-MALUS_DISTANCE_SCORE = 1000000
 MIN_SAMPLE_CONFIRMED_THRESHOLD = 5
 
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
@@ -150,7 +157,7 @@ class PersonnageData:
             #FIXME: confirmed based on frame size + not to hold frames
             self.confirmed = len(self.frameHistory) > MIN_SAMPLE_CONFIRMED_THRESHOLD
 
-            print("DEBUG: Perso succession: %s." % (self))
+            #print("DEBUG: Perso succession: %s." % (self))
 
     def decayFreshness(self, iteration):
         if iteration > self.frame + MAX_MISSING_FRAME_BEFORE_DECAY:
@@ -205,14 +212,17 @@ class PersonnageDistance:
         return f"[Distance vector={self.instantDistanceVector} norme={self.cartesianDistance()}]"
 
     def isPossible(self) -> bool:
-        # return (self.accelerationVector is None or abs(vectorNorme(self.accelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION) \
-        #     and abs(vectorNorme(self.distanceVector)) < DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME * self.frame \
-        #     and abs(vectorNorme(self.distanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE_DEPLACEMENT \
-        #     and (self.speedVector is None or abs(vectorNorme(self.speedVector)) < ABSOLUTE_MAXIMUM_SPEED) \
-        
-        isPossible = abs(vectorNorme(self.smoothedSpeedVector)) < ABSOLUTE_MAXIMUM_SPEED and abs(vectorNorme(self.smoothedDistanceVector)) < ABSOLUTE_MAXIMUM_DISTANCE
-        if self.smoothedAccelerationVector is not None:
-            return isPossible and abs(vectorNorme(self.smoothedAccelerationVector)) < ABSOLUTE_MAXIMUM_ACCELERATION
+        if self.frame == 0:
+            return False
+
+        # A distance is possible if distance and speed are maxed + if acceleration is maxed
+        # isPossible = abs(vectorNorme(self.smoothedSpeedVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_SPEED and abs(vectorNorme(self.smoothedDistanceVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE
+        # if self.smoothedAccelerationVector is not None:
+        #     return isPossible and abs(vectorNorme(self.smoothedAccelerationVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION
+
+        isPossible = abs(vectorNorme(self.instantSpeedVector)) < ABSOLUTE_MAXIMUM_INSTANT_SPEED and abs(vectorNorme(self.instantDistanceVector)) < ABSOLUTE_MAXIMUM_INSTANT_DISTANCE
+        if self.instantAccelerationVector is not None:
+            return isPossible and abs(vectorNorme(self.instantAccelerationVector)) < ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION
         return isPossible
 
     def cartesianDistance(self) -> float:
@@ -353,8 +363,37 @@ def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
     return score
 
+def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
+    distanceScorer = naive2dDistanceScorer
+    fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
+
+    minimalDistancePath = None
+    minimalDistanceScore = None
+    pathSize = min(len(persoListA), len(persoListB))
+
+    # Loop over all possible path
+    currentPathScheme = [0] * pathSize
+    currentDistanceScore = 0
+    currentDistanceMatrix = fullDistanceMatrix
+    currentPathIndex = 0
+
+    # First iteration
+    n = currentPathScheme[currentPathIndex]
+    nthDistance = currentDistanceMatrix.getNthMinimalDistance(n)
+    if nthDistance is None:
+        # Done testing pathIndex => change path
+        currentPathScheme[currentPathIndex] = 0
+        currentPathIndex += 1
+    else:
+        score = distanceScorer(nthDistance, fullDistanceMatrix)
+        currentDistanceScore += score
+        currentPathScheme[currentPathIndex] += 1
+
+
+
+
 def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = multidimensionalScorer
+    distanceScorer = naive2dDistanceScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     # Main path
@@ -424,9 +463,7 @@ def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], perso
                     pathFound = False
                     break
 
-                if score < MALUS_DISTANCE_SCORE:
-                    # Add distance to path only if score lesser than MALUS_DISTANCE_SCORE
-                    currentDistancePath.append(nthDistance)
+                currentDistancePath.append(nthDistance)
 
                 distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
                 # Increment path index to complete the path
@@ -446,7 +483,7 @@ def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], perso
     if minimalDistancePath is None:
         minimalDistancePath = []
 
-    print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
+    #print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
     return minimalDistancePath
 
 
@@ -578,6 +615,16 @@ class Personnages3D:
         # Fenêtre pour la vue du dessus
         cv2.namedWindow('vue du dessus', cv2.WND_PROP_FULLSCREEN)
         self.black = np.zeros((720, 1280, 3), dtype = "uint8")
+        cv2.line(self.black, (0, 360), (1280, 360), (255, 255, 255), 2)
+
+        screenScale = 160/1000
+        # draw horizontal lines
+        for k in range(0, 720, int(1000*screenScale)):
+            cv2.line(self.black, (0, k), (1280, k), (255, 255, 255), thickness=1)
+
+        # draw vertical lines
+        for k in range(0, 1280, int(1000*screenScale)):
+            cv2.line(self.black, (k, 0), (k, 720), (255, 255, 255), thickness=1)
 
         self.loop = True
         # Numéro de la frame
@@ -588,7 +635,7 @@ class Personnages3D:
         représenté par un cercle
         """
         # # self.black = np.zeros((720, 1280, 3), dtype = "uint8")
-        cv2.line(self.black, (0, 360), (1280, 360), (255, 255, 255), 2)
+        
         for perso in self._repo.getCurrentIterationPersonages():
             #print("DEBUG: coord #%d : %s" % (perso.uid, perso.coordinate))
             x = 360 + int(perso.coordinate[0]*160/1000)
