@@ -29,13 +29,13 @@ import cv2
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
 #DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
-SMOOTHING_WINDOW_SIZE = 5
-ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE = 400
-ABSOLUTE_MAXIMUM_SMOOTHED_SPEED = 300
-ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION = 500
+SMOOTHING_WINDOW_SIZE = 10
+ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE = 600
+ABSOLUTE_MAXIMUM_SMOOTHED_SPEED = 200
+ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION = 800
 ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 10000
 ABSOLUTE_MAXIMUM_INSTANT_SPEED = 10000
-ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 700
+ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 1000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
 MIN_SAMPLE_CONFIRMED_THRESHOLD = 5
@@ -333,10 +333,75 @@ class DistanceMatrix:
         del clone.__matrix[id(row)]
 
         #print("DEBUG: reduced matrix contains %d distance(s) in %d row(s) ..." % (len(clone.__allDistances), len(clone.__matrix)))
+        if len(clone.__allDistances) == 0:
+            return None
         return clone
 
     def reduceMatrix(self, distance: PersonnageDistance):
         return self._reduceMatrix(distance.p1, distance.p2)
+
+
+class DistancePathIterator:
+    """ Iterate over a DistanceMatrix returning possibles distance pathes """
+
+    def __init__(self, matrix: DistanceMatrix) -> None:
+        self.matrix = matrix
+        self.currentPathScheme = [0]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        distancePath = []
+        currentDistanceMatrix = self.matrix
+        currentPathIndex = 0
+
+        #print("DEBUG: currentPathIndex=%d currentPathScheme=%s." % (currentPathIndex, str(self.currentPathScheme)))
+
+        # First iteration
+        while True:
+            n = self.currentPathScheme[currentPathIndex]
+            dist = currentDistanceMatrix.getNthMinimalDistance(n)
+            if n == 0 and dist is None:
+                # Empty matrix
+                #print("DEBUG: Empty Matrix.")
+                raise StopIteration
+            if dist is None:
+                # Done exploring currentPathIndex
+                if len(self.currentPathScheme) > currentPathIndex + 1:
+                    # We can propagate the carry
+                    #print("DEBUG: Carry propagation.")
+                    self.currentPathScheme[currentPathIndex] = 0
+                    self.currentPathScheme[currentPathIndex+1] += 1
+                else:
+                    # Cannot propagate the carry => end of iteration
+                    #print("DEBUG: End of iteration with last path: [%s]." % (str(self.currentPathScheme)))
+                    raise StopIteration
+                continue
+            else:
+                # Found a distance. Increment currentPathIndex
+                distancePath.append(dist)
+
+                currentPathIndex += 1
+                currentDistanceMatrix = currentDistanceMatrix.reduceMatrix(dist)
+                if currentDistanceMatrix is None:
+                    # Done exploring current path
+                    #print("DEBUG: End exploring path.")
+                    break
+                else:
+                    #print("DEBUG: Exploring reduced matrix.")
+                    # A reduce matrix need to be explored
+                    if currentPathIndex == len(self.currentPathScheme):
+                        # We need to add next distance path in scheme initialized with 0
+                        #print("DEBUG: Appending new scheme level.")
+                        self.currentPathScheme.append(0)
+            #print("DEBUG: infinite loop.")
+        
+        #print("DEBUG: DistancePathIterator path: [%s] => distances: [%s]." % (str(self.currentPathScheme), str(distancePath)))
+
+        self.currentPathScheme[0] += 1
+        return distancePath
+
 
 def naive2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     return dist.cartesianDistance()
@@ -364,32 +429,29 @@ def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     return score
 
 def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = naive2dDistanceScorer
+    distanceScorer = historical2dDistanceScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     minimalDistancePath = None
     minimalDistanceScore = None
-    pathSize = min(len(persoListA), len(persoListB))
+    matrixIterator = DistancePathIterator(fullDistanceMatrix)
+    for distancePath in matrixIterator:
+        #print("DEBUG: Exploring path: %s." % (distancePath))
+        distanceScore = 0
+        for distance in distancePath:
+            score = distanceScorer(distance, fullDistanceMatrix)
+            distanceScore += score
 
-    # Loop over all possible path
-    currentPathScheme = [0] * pathSize
-    currentDistanceScore = 0
-    currentDistanceMatrix = fullDistanceMatrix
-    currentPathIndex = 0
+        if minimalDistanceScore is None or minimalDistanceScore > distanceScore:
+            #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
+            minimalDistancePath = distancePath
+            minimalDistanceScore = distanceScore
 
-    # First iteration
-    n = currentPathScheme[currentPathIndex]
-    nthDistance = currentDistanceMatrix.getNthMinimalDistance(n)
-    if nthDistance is None:
-        # Done testing pathIndex => change path
-        currentPathScheme[currentPathIndex] = 0
-        currentPathIndex += 1
-    else:
-        score = distanceScorer(nthDistance, fullDistanceMatrix)
-        currentDistanceScore += score
-        currentPathScheme[currentPathIndex] += 1
+    if minimalDistancePath is None:
+        minimalDistancePath = []
 
-
+    #print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
+    return minimalDistancePath
 
 
 def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
@@ -581,7 +643,7 @@ class PersonnagesCoordinatesRepo:
         #previousPersos = self._getIterationPersonnageData(iteration - k)
         previousPersos = self.getAllPersonages()
 
-        betterPath = minimalDistanceOverallPathFinder(newPersos, previousPersos)
+        betterPath = minimalDistanceOverallPathFinder2(newPersos, previousPersos)
         for dist in betterPath:
             newPerso = dist.p1
             previousPerso = dist.p2
