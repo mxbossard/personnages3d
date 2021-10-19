@@ -29,16 +29,17 @@ import cv2
 #MAX_FRAME_PASSE_A_SCANNER = 200
 # FIXME: DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME should be the max 2D distance
 #DISTANCE_DEPLACEMENT_MAXIMUM_PAR_FRAME = 500
-SMOOTHING_WINDOW_SIZE = 10
+SMOOTHING_WINDOW_SIZE = 5
 ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE = 600
 ABSOLUTE_MAXIMUM_SMOOTHED_SPEED = 200
 ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION = 800
-ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 10000
-ABSOLUTE_MAXIMUM_INSTANT_SPEED = 10000
-ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 1000
+ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 1800
+ABSOLUTE_MAXIMUM_INSTANT_SPEED = 600
+ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 350
+NOT_CONFIRMED_MALUS_DISTANCE = 2000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
-MIN_SAMPLE_CONFIRMED_THRESHOLD = 5
+MIN_SAMPLE_CONFIRMED_THRESHOLD = 10
 
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
 
@@ -54,14 +55,16 @@ def vectorDelta(vector1: Tuple[float, float, float], vector2: Tuple[float, float
     return ((vector1[0]-vector2[0]) / frameDelta, (vector1[1]-vector2[1]) / frameDelta, (vector1[2]-vector2[2]) / frameDelta)
 
 def smoothCartesianCoordinate(coordinatesList: Sequence[Tuple[float, float, float]], history:int, windowSize:int) -> Tuple[float, float, float]:
-    # coordinate smoothing algorithm: averaging data
+    """ coordinate smoothing algorithm: averaging data """
     xSmoothed = 0
     ySoothed = 0
     zSmoothed = 0
+    avgPoint = (xSmoothed, ySoothed, zSmoothed)
 
     if len(coordinatesList) > 0:
         coordsCount = 0
-        for coords in coordinatesList[history:history + windowSize]:
+        coordinates = coordinatesList[history:history + windowSize]
+        for coords in coordinates:
             xSmoothed += coords[0]
             ySoothed += coords[1]
             zSmoothed += coords[2]
@@ -70,8 +73,10 @@ def smoothCartesianCoordinate(coordinatesList: Sequence[Tuple[float, float, floa
         xSmoothed /= coordsCount
         ySoothed /= coordsCount
         zSmoothed /= coordsCount
+
+        avgPoint = (xSmoothed, ySoothed, zSmoothed)
     
-    return (xSmoothed, ySoothed, zSmoothed)
+    return avgPoint
 
 def weightedScore(*scores: float) -> float:
     scoreCount = len(scores)
@@ -344,6 +349,19 @@ class DistanceMatrix:
 class DistancePathIterator:
     """ Iterate over a DistanceMatrix returning possibles distance pathes """
 
+    # Path schemes: take all first minimal distances
+    # All pathes for a 3x3 matrix are :
+    # 0 0 0
+    # 1 0 0
+    # ...
+    # 8 0 0
+    # 0 1 0
+    # 1 1 0
+    # ...
+    # 8 1 0
+    # ...
+    # 8 3 0
+
     def __init__(self, matrix: DistanceMatrix) -> None:
         self.matrix = matrix
         self.currentPathScheme = [0]
@@ -413,8 +431,16 @@ def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
 def historical2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     return dist.cartesianDistance() / (dist.history + 1)
 
+def activityScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    score = 0
+    # p1 is never confirmed by design
+    if not dist.p2.confirmed:
+        score += NOT_CONFIRMED_MALUS_DISTANCE
+    return score
+
 def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
-    cartesianDist = dist.cartesianDistance()
+    cartesianDist = naive2dDistanceScorer(dist, matrix)
+    activityScore = activityScorer(dist, matrix)
     speedDist = dist.speedDistance()
     historySize = len(dist.p1.frameHistory) + len(dist.p2.frameHistory)
     historyScore = max(0, 1000 - np.log2(historySize)*100)
@@ -424,12 +450,14 @@ def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
             freshness += 1
     freshnessScore = max(0, 1000 - freshness*10)
     #score = weightedScore(historyScore, freshnessScore, cartesianDist, speedDist)
-    score = weightedScore(cartesianDist, speedDist, historyScore, freshnessScore, )
-    print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
+    #score = weightedScore(cartesianDist, speedDist, historyScore, freshnessScore, )
+    score = weightedScore(activityScore, cartesianDist, speedDist,)
+    #print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
+    
     return score
 
 def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = historical2dDistanceScorer
+    distanceScorer = multidimensionalScorer
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     minimalDistancePath = None
@@ -446,101 +474,6 @@ def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], pers
             #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
             minimalDistancePath = distancePath
             minimalDistanceScore = distanceScore
-
-    if minimalDistancePath is None:
-        minimalDistancePath = []
-
-    #print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
-    return minimalDistancePath
-
-
-def minimalDistanceOverallPathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData]) -> Sequence[PersonnageDistance]:
-    distanceScorer = naive2dDistanceScorer
-    fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
-
-    # Main path
-    minimalDistancePath = None
-    minimalDistanceScore = None
-    pathSize = min(len(persoListA), len(persoListB))
-
-    # Initial path scheme: take all first minimal distances
-    # All pathes for a 3x3 matrix are :
-    # 0 0 0
-    # 1 0 0
-    # ...
-    # 8 0 0
-    # 0 1 0
-    # 1 1 0
-    # ...
-    # 8 1 0
-    # ...
-    # 8 3 0
-    currentPathScheme = [0] * pathSize
-    
-    exploredAllPath = pathSize == 0
-    while not exploredAllPath:
-        #print("DEBUG: Exploring path: %s." % (currentPathScheme))
-
-        distanceMatrix = fullDistanceMatrix
-        currentDistancePath = []
-        pathFound = False
-        currentDistanceScore = 0
-
-        # Walk a path of minimal distance to score it
-        nthDistance = None
-        pathIndex = 0
-        exploredPath = []
-        while pathIndex < pathSize:
-            # Search for next nth distance
-
-            n = currentPathScheme[pathIndex]
-            nthDistance = distanceMatrix.getNthMinimalDistance(n)
-            if nthDistance is None:
-                pathFound = False
-                #print("DEBUG: Found empty [%d] #%dth distance." % (pathIndex, n))
-                # Done testing distance on scheme pathIndex position
-                if n == 0:
-                    # No minimal distance exists
-                    exploredAllPath = True
-                    break
-                currentPathScheme[pathIndex] = 0
-                if pathIndex + 1 < pathSize:
-                    # Carry propagation
-                    currentPathScheme[pathIndex + 1] += 1
-                else: 
-                    # Done exploring all schemes
-                    exploredAllPath = True
-                    #print("DEBUG: Done exploring all schemes.")
-                    break
-                continue
-            else:
-                pathFound = True
-                exploredPath.append(n)
-                #print("DEBUG: Found valid [%d] #%dth distance: %s." % (pathIndex, n, nthDistance))
-                # Found a valid distance
-                score = distanceScorer(nthDistance, fullDistanceMatrix)
-                currentDistanceScore += score
-                if minimalDistanceScore is not None and currentDistanceScore > minimalDistanceScore:
-                    # If currentDistanceScore greater than minimalDistanceScore we can throw away this path.
-                    pathFound = False
-                    break
-
-                currentDistancePath.append(nthDistance)
-
-                distanceMatrix = distanceMatrix.reduceMatrix(nthDistance)
-                # Increment path index to complete the path
-                pathIndex += 1
-
-        # Increment scheme path for next path scoring loop
-        if len(currentPathScheme) > 0:
-            currentPathScheme[0] += 1
-
-        if pathFound:
-            #print("DEBUG: Explored path: %s." % (exploredPath))
-            if minimalDistanceScore is None or minimalDistanceScore > currentDistanceScore:
-                #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
-                minimalDistancePath = currentDistancePath
-                minimalDistanceScore = currentDistanceScore
 
     if minimalDistancePath is None:
         minimalDistancePath = []
