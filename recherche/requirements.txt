@@ -1,2 +1,3 @@
 numpy
 opencv-python
+filterpi == 1.4.4
