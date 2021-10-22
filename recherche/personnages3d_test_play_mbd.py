@@ -21,6 +21,7 @@ import copy
 from time import time, sleep
 from types import FunctionType
 from typing import Mapping, MutableSequence, Sequence, Tuple
+from kalman_filter import *
 
 import numpy as np
 import cv2
@@ -107,6 +108,9 @@ class PersonnageData:
         self.confirmed = False
         self.smoothedSpeedHistory = []
         self.smoothedAccelerationHistory = []
+        self.kf = init2dKalmanFilter((x, y), (0, 0), 1, 1, 1)
+        self.kfSmoothedCoordinates = None
+        self.kfPredictedCoordinates = None
 
     def __str__(self):
         data = ""
@@ -140,6 +144,9 @@ class PersonnageData:
             self.frameAppearanceCount = p.frameAppearanceCount + 1
             self.freshness = p.freshness
             self._increaseFreshness()
+            self.kf = p.kf
+            self.kfSmoothedCoordinates = update2dKF(self.kf, (self.coordinate[0], self.coordinate[1]))
+            self.kfPredictedCoordinates = predict2dKF(self.kf)
 
             # Historical data
             self.frameHistory = self.frameHistory + p.frameHistory
@@ -594,6 +601,9 @@ class PersonnagesCoordinatesRepo:
             print("DEBUG: Coordinates which lead to new personage recording: [%s]." % (coordinates))
 
         for perso in self.getAllPersonages():
+            if perso.frame != iteration:
+                print("DEBUG: One tracked Personnage was not updated: [%s]." % (perso))
+                #update2dKF(perso.kf, None)
             perso.decayFreshness(iteration)
 
 
@@ -643,7 +653,23 @@ class Personnages3D:
             color = (128,128,128)
             if perso.confirmed:
                 color = COLORS[(perso.uid - 1) % 7]
-            cv2.circle(self.black, (y, x), 6, color, thickness=2)
+            cv2.circle(self.black, (y, x), 3, color, thickness=1)
+
+            rectangleHalfSize = 6
+            if perso.kfSmoothedCoordinates is not None:
+                kfSmoothedX = 360 + int(perso.kfSmoothedCoordinates[0]*160/1000)
+                kfSmoothedY = int(perso.kfSmoothedCoordinates[1]*160/1000)
+                p1 = (kfSmoothedY - rectangleHalfSize, kfSmoothedX - rectangleHalfSize)
+                p2 = (kfSmoothedY + rectangleHalfSize, kfSmoothedX + rectangleHalfSize)
+                cv2.rectangle(self.black, p1, p2, color, thickness=2)
+
+            rectangleHalfSize = 4
+            if perso.kfPredictedCoordinates is not None:
+                kfPredictedX = 360 + int(perso.kfPredictedCoordinates[0]*160/1000)
+                kfPredictedY = int(perso.kfPredictedCoordinates[1]*160/1000)
+                p1 = (kfPredictedY - rectangleHalfSize, kfPredictedX - rectangleHalfSize)
+                p2 = (kfPredictedY + rectangleHalfSize, kfPredictedX + rectangleHalfSize)
+                cv2.rectangle(self.black, p1, p2, color, thickness=1)
 
     def run(self):
         """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""

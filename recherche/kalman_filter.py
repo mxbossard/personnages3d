@@ -2,11 +2,11 @@ from typing import Tuple
 import numpy as np
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
-
+from scipy.linalg import block_diag
 
 # Explainations about Kalman Filter: http://www.bzarg.com/p/how-a-kalman-filter-works-in-pictures/
-# Use an example to configure : https://github.com/andrewadare/kalman-tracker/blob/db411a408277d420e398844e5b5ee40165a68a7d/tracked_rotated_box.py
-def init2dKalmanFilter(initialPosition: Tuple, initialSpeed:Tuple, uncertainty: float, measurementNoise: float, dt: float = 1) -> KalmanFilter:
+# Use an example to configure : https://github.com/andrewadare/kalman-tracker/blob/db411a408277d420e398844e5b5ee40165a68a7d/tracked_point.py
+def init2dKalmanFilter(initialPosition: Tuple[float, float], initialSpeed:Tuple[float, float], uncertainty: float, measurementNoise: float, dt: float = 1) -> KalmanFilter:
     """ See the documentation: https://filterpy.readthedocs.io/en/latest/kalman/KalmanFilter.html """
 
     # dim_x=4 => position and velocity are accounted in 2 dimensions
@@ -14,7 +14,7 @@ def init2dKalmanFilter(initialPosition: Tuple, initialSpeed:Tuple, uncertainty: 
     dim_x = 4 
     dim_z = 2
     noise_variance = 0.13
-    kf = KalmanFilter(dim_x=dim_x, dim_z=dim_z, dim_u=0, compute_log_likelihood=True)
+    kf = KalmanFilter(dim_x=dim_x, dim_z=dim_z, dim_u=0)
     
     # Assign initial value. (dim_x, 1), default = [0,0,0…0].
     kf.x = np.array([initialPosition[0], initialSpeed[0], initialPosition[1], initialSpeed[1]])
@@ -35,12 +35,25 @@ def init2dKalmanFilter(initialPosition: Tuple, initialSpeed:Tuple, uncertainty: 
     kf.P *= uncertainty
 
     # Assign the measurement noise. (dim_z, dim_z), default eye(dim_x).
-    kf.R *= measurementNoise
+    kf.R *= measurementNoise**2
 
     # Assign the process noise. (dim_x, dim_x), default eye(dim_x).
-    kf.Q = Q_discrete_white_noise(dim=dim_x, dt=dt, var=noise_variance)
+    #kf.Q = Q_discrete_white_noise(dim=dim_x, dt=dt, var=noise_variance)
+    q = Q_discrete_white_noise(dim=2, dt=dt, var=noise_variance**2)
+    kf.Q = block_diag(q, q)
 
     return kf
 
-def predict2dKF(kf: KalmanFilter):
-    kf.
+def position2dKF(kf: KalmanFilter) -> Tuple[float, float]:
+    return (kf.x[0], kf.x[2])
+
+def predict2dKF(kf: KalmanFilter) -> Tuple[float, float]:
+    kf.predict()
+    return position2dKF(kf)
+
+def update2dKF(kf: KalmanFilter, position: Tuple[float, float]) -> Tuple[float, float]:
+    if position is not None:
+        kf.update([position[0], position[1]])
+    else:
+        kf.update(None)
+    return position2dKF(kf)
