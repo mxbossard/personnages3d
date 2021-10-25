@@ -9,10 +9,13 @@ Installation: voir le readme
 TODO:
 - Vérifier les calculs de vitesse et d'accélération
 - Forger un vrai bon score de fraicheur/historique
-- Square size proportional to uncertainty
-- Effacer les vieux tracés
-- Pause/Resume avec espace
-- Right arrow => pause + one step forward
+- Remplacer les smooth coodinates par les prediction du kalman filter   TO_CHECK
+- Square size proportional to uncertainty ?
+- Effacer les vieux tracés      DONE
+- Pause/Resume avec espace      DONE
+- Right arrow => pause + one step forward   DONE
+- Change speed with +- keys
+- Display uid
 - Left arrow => pause - one step backward
 
 """
@@ -39,9 +42,9 @@ SMOOTHING_WINDOW_SIZE = 5
 ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE = 600
 ABSOLUTE_MAXIMUM_SMOOTHED_SPEED = 200
 ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION = 800
-ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 1800
-ABSOLUTE_MAXIMUM_INSTANT_SPEED = 600
-ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 350
+ABSOLUTE_MAXIMUM_INSTANT_DISTANCE = 1200
+ABSOLUTE_MAXIMUM_INSTANT_SPEED = 300
+ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION = 200
 NOT_CONFIRMED_MALUS_DISTANCE = 2000
 MAX_MISSING_FRAME_BEFORE_DECAY = 5
 MAX_MISSING_FRAME_BEFORE_DEAD = 200
@@ -60,7 +63,8 @@ def vectorDelta(vector1: Tuple[float, float, float], vector2: Tuple[float, float
         return (0, 0, 0)
     return ((vector1[0]-vector2[0]) / frameDelta, (vector1[1]-vector2[1]) / frameDelta, (vector1[2]-vector2[2]) / frameDelta)
 
-def smoothCartesianCoordinate(coordinatesList: Sequence[Tuple[float, float, float]], history:int, windowSize:int) -> Tuple[float, float, float]:
+# Deprecated
+def smoothCartesianCoordinate0(coordinatesList: Sequence[Tuple[float, float, float]], history:int, windowSize:int) -> Tuple[float, float, float]:
     """ coordinate smoothing algorithm: averaging data """
     xSmoothed = 0
     ySoothed = 0
@@ -141,7 +145,8 @@ class PersonnageData:
             self.uid = uid
 
     def getSoothedCoordinates(self, history:int=0) -> Tuple[float, float, float]:
-        return smoothCartesianCoordinate(self.coordinatesHistory, history, self.smoothingWindow)
+        #return smoothCartesianCoordinate(self.coordinatesHistory, history, self.smoothingWindow)
+        return self.smoothedCoordinatesHistory[0]
 
     def succeedTo(self, p):
         if p is not None:
@@ -150,15 +155,18 @@ class PersonnageData:
             self.freshness = p.freshness
             self._increaseFreshness()
             self.kf = p.kf
-            self.kfSmoothedCoordinates = update2dKF(self.kf, (self.coordinate[0], self.coordinate[1]))
-            self.kfPredictedCoordinates = predict2dKF(self.kf)
+            kfSmoothedCoordinates = update2dKF(self.kf, (self.coordinate[0], self.coordinate[1]))
+            self.kfSmoothedCoordinates = (kfSmoothedCoordinates[0], kfSmoothedCoordinates[1], 0)
+            kfPredictedCoordinates = predict2dKF(self.kf)
+            self.kfPredictedCoordinates = (kfPredictedCoordinates[0], kfPredictedCoordinates[1], 0)
 
             # Historical data
             self.frameHistory = self.frameHistory + p.frameHistory
             #print("DEBUG: Frame history: %s." % (self.frameHistory))
             self.coordinatesHistory = self.coordinatesHistory + p.coordinatesHistory
 
-            smoothedCoordinate = smoothCartesianCoordinate(self.coordinatesHistory, 0, self.smoothingWindow)
+            #smoothedCoordinate = smoothCartesianCoordinate(self.coordinatesHistory, 0, self.smoothingWindow)
+            smoothedCoordinate = self.kfSmoothedCoordinates
             self.smoothedCoordinatesHistory.insert(0, smoothedCoordinate)
 
             if (len(p.coordinatesHistory) >= p.smoothingWindow):
@@ -201,26 +209,26 @@ class PersonnageDistance:
         self.p1: PersonnageData = p1
         self.p2: PersonnageData = p2
         self.frame: int = p1.frame - p2.frame
-        self.p1SmoothedCoordinate = smoothCartesianCoordinate([p1.coordinate] + p2.coordinatesHistory, 0, p1.smoothingWindow)
-        self.p2SmoothedCoordinate = p2.smoothedCoordinatesHistory[0]
+        #self.p1SmoothedCoordinate = smoothCartesianCoordinate([p1.coordinate] + p2.coordinatesHistory, 0, p1.smoothingWindow)
+        #self.p2SmoothedCoordinate = p2.smoothedCoordinatesHistory[0]
         self.instantDistanceVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], 1)
-        self.smoothedDistanceVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, 1)
+        #self.smoothedDistanceVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, 1)
         self.history = abs(len(p1.frameHistory) - len(p2.frameHistory))
         self.color: float = None
 
         # Non symetric distance history: only distance from p1 to p2 history
         self.instantSpeedVector = None
-        self.smoothedSpeedVector = None
+        #self.smoothedSpeedVector = None
         self.instantAccelerationVector = None
-        self.smoothedAccelerationVector = None
+        #self.smoothedAccelerationVector = None
 
         if self.frame > 0:
             self.instantSpeedVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], self.frame)
-            self.smoothedSpeedVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, self.frame)
+            #self.smoothedSpeedVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, self.frame)
             #self.distanceVectorHistory = [ vectorDelta(p1.coordinate, p2Coordinate, self.frame) for p2Coordinate in p2.smoothedCoordinatesHistory[:historySize] ]
         if self.instantSpeedVector is not None and len(p2.smoothedSpeedHistory) > 0:
             self.instantAccelerationVector = vectorDelta(self.instantSpeedVector, p2.smoothedSpeedHistory[0], self.frame)
-            self.smoothedAccelerationVector = vectorDelta(self.smoothedSpeedVector, p2.smoothedSpeedHistory[0], self.frame)
+            #self.smoothedAccelerationVector = vectorDelta(self.smoothedSpeedVector, p2.smoothedSpeedHistory[0], self.frame)
             #self.speedVectorHistory = [ vectorDelta(p1HypotheticSpeed, p2Speed, 1) for p2Speed in p2.smoothedSpeedHistory[:historySize] ]
 
         #self.accelerationVectorHistory = [ vectorDelta(p1.coordinate, p2Accel, 1) for p2Accel in p2.smoothedAccelerationHistory[:historySize] ]
@@ -243,19 +251,19 @@ class PersonnageDistance:
         return isPossible
 
     def cartesianDistance(self) -> float:
-        return vectorNorme(self.smoothedDistanceVector)
+        return vectorNorme(self.instantDistanceVector)
 
     def speedDistance(self) -> float:
         ancestorSpeedVector = (0, 0, 0)
-        if self.smoothedSpeedVector is not None and len(self.p2.smoothedSpeedHistory) > 0:
+        if len(self.p2.smoothedSpeedHistory) > 1 and self.p2.smoothedSpeedHistory[0] is not None:
              ancestorSpeedVector = self.p2.smoothedSpeedHistory[0]
-        return vectorNorme(vectorDelta(self.smoothedSpeedVector, ancestorSpeedVector, self.frame))
+        return vectorNorme(vectorDelta(self.instantSpeedVector, ancestorSpeedVector, self.frame))
 
     def accelerationDistance(self) -> float:
         ancestorAccelerationVector = (0, 0, 0)
-        if self.smoothedAccelerationVector is not None and len(self.p2.smoothedAccelerationHistory) > 0:
+        if len(self.p2.smoothedAccelerationHistory) > 1 and self.p2.smoothedAccelerationHistory[0] is not None:
              ancestorAccelerationVector = self.p2.smoothedAccelerationHistory[0]
-        return vectorNorme(vectorDelta(self.smoothedAccelerationVector, ancestorAccelerationVector, self.frame))
+        return vectorNorme(vectorDelta(self.instantAccelerationVector, ancestorAccelerationVector, self.frame))
 
     # Deprecated
     def historicalCartesianDistance(self) -> float:
@@ -624,6 +632,8 @@ class Personnages3D:
 
         self.pointCountHistory = 50
 
+        self.pause = False
+
         # Fenêtre pour la vue du dessus
         cv2.namedWindow('vue du dessus', cv2.WND_PROP_FULLSCREEN)
         self.background = np.zeros((720, 1280, 3), dtype = "uint8")
@@ -661,8 +671,9 @@ class Personnages3D:
             self.currentFrameCircles = []
             self.drawnedCircles.append(self.currentFrameCircles)
 
-        cv2.circle(self.overlay, (x, y), radius, color, thickness)
+        circle = cv2.circle(self.overlay, (x, y), radius, color, thickness)
         self.currentFrameCircles.append((x, y, radius, color, thickness))
+        return circle
         
 
     def _draw_square(self, x, y, halfSide, color, thickness):
@@ -672,8 +683,9 @@ class Personnages3D:
 
         p1 = (x - halfSide, y - halfSide)
         p2 = (x + halfSide, y + halfSide)
-        cv2.rectangle(self.overlay, p1, p2, color, thickness)
+        rect = cv2.rectangle(self.overlay, p1, p2, color, thickness)
         self.currentFrameSquares.append((p1, p2, color, thickness))
+        return rect
 
     def _clear_old_graphs(self):
         # Erase old points
@@ -716,7 +728,8 @@ class Personnages3D:
             if perso.kfSmoothedCoordinates is not None:
                 kfSmoothedX = 360 + int(perso.kfSmoothedCoordinates[0]*160/1000)
                 kfSmoothedY = int(perso.kfSmoothedCoordinates[1]*160/1000)
-                self._draw_square(kfSmoothedY, kfSmoothedX, rectangleHalfSize, color, 1)
+                rect = self._draw_square(kfSmoothedY, kfSmoothedX, int(rectangleHalfSize), color, 1)
+                cv2.addText(self.overlay, str(perso.uid), (kfSmoothedY-rectangleHalfSize, kfSmoothedX-rectangleHalfSize-6), "Times", 10, color)
 
             # rectangleHalfSize = 5
             # if perso.kfPredictedCoordinates is not None:
@@ -757,8 +770,25 @@ class Personnages3D:
 
             self.frame += 1
 
-            k = cv2.waitKey(76)
-            if k == 27:  # Esc
+            k = cv2.waitKey(30)
+            # if k > -1:
+            #     print("DEBUG: hit %d" % k)
+
+            if self.pause:
+                while k != 27 and k != 32 and k != 81 and k != 83:
+                        k = cv2.waitKey(1000)
+
+            if k == 32: # Space
+                k = -1
+                self.pause = not self.pause
+                
+            elif k == 81:   # Left arrow 
+                self.pause = True
+
+            elif k == 83:   # Right arrow
+                self.pause = True
+
+            if k == 27: # Esc
                 break
 
         cv2.destroyAllWindows()
