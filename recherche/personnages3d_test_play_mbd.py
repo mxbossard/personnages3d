@@ -7,12 +7,17 @@ Vous ne devez modifier que ce fichier
 Installation: voir le readme
 
 TODO:
-- Vérifier l'algo de recherche de la distance minimum
-- Forger un vrai bon score de fraicheur/historique
 - Vérifier les calculs de vitesse et d'accélération
+- Forger un vrai bon score de fraicheur/historique
+- Square size proportional to uncertainty
+- Effacer les vieux tracés
+- Pause/Resume avec espace
+- Right arrow => pause + one step forward
+- Left arrow => pause - one step backward
 
 """
 
+from collections import deque
 from functools import cmp_to_key
 import os
 import sys
@@ -20,7 +25,7 @@ import json
 import copy
 from time import time, sleep
 from types import FunctionType
-from typing import Mapping, MutableSequence, Sequence, Tuple
+from typing import Deque, Mapping, MutableSequence, Sequence, Tuple
 from kalman_filter import *
 
 import numpy as np
@@ -617,30 +622,80 @@ class Personnages3D:
 
         self.json_data = read_json(FICHIER)
 
+        self.pointCountHistory = 50
+
         # Fenêtre pour la vue du dessus
         cv2.namedWindow('vue du dessus', cv2.WND_PROP_FULLSCREEN)
-        self.black = np.zeros((720, 1280, 3), dtype = "uint8")
-        cv2.line(self.black, (0, 360), (1280, 360), (255, 255, 255), 2)
+        self.background = np.zeros((720, 1280, 3), dtype = "uint8")
+        self.overlay = self.background.copy()
+
+        # draw center line
+        cv2.line(self.background, (0, 360), (1280, 360), (255, 255, 255), 2)
 
         screenScale = 160/1000
         # draw horizontal lines
         for k in range(0, 720, int(1000*screenScale)):
-            cv2.line(self.black, (0, k), (1280, k), (255, 255, 255), thickness=1)
+            cv2.line(self.background, (0, k), (1280, k), (255, 255, 255), thickness=1)
 
         # draw vertical lines
         for k in range(0, 1280, int(1000*screenScale)):
-            cv2.line(self.black, (k, 0), (k, 720), (255, 255, 255), thickness=1)
+            cv2.line(self.background, (k, 0), (k, 720), (255, 255, 255), thickness=1)
+
+        
 
         self.loop = True
         # Numéro de la frame
         self.frame = 0
+
+        self.drawnedCircles = deque()
+        self.drawnedSquares = deque()
+        self._complete_drawings()
+
+
+    def _complete_drawings(self):
+        self.currentFrameCircles = None
+        self.currentFrameSquares = None
+
+    def _draw_circle(self, x, y, radius, color, thickness):
+        if self.currentFrameCircles is None:
+            self.currentFrameCircles = []
+            self.drawnedCircles.append(self.currentFrameCircles)
+
+        cv2.circle(self.overlay, (x, y), radius, color, thickness)
+        self.currentFrameCircles.append((x, y, radius, color, thickness))
+        
+
+    def _draw_square(self, x, y, halfSide, color, thickness):
+        if self.currentFrameSquares is None:
+            self.currentFrameSquares = []
+            self.drawnedSquares.append(self.currentFrameSquares)
+
+        p1 = (x - halfSide, y - halfSide)
+        p2 = (x + halfSide, y + halfSide)
+        cv2.rectangle(self.overlay, p1, p2, color, thickness)
+        self.currentFrameSquares.append((p1, p2, color, thickness))
+
+    def _clear_old_graphs(self):
+        # Erase old points
+        if len(self.drawnedCircles) > self.pointCountHistory:
+            circlesToDelete = self.drawnedCircles.popleft()
+            if circlesToDelete:
+                for x, y, radius, color, thickness in circlesToDelete:
+                    cv2.circle(self.overlay, (x, y), radius, (0, 0, 0), thickness)
+        if len(self.drawnedSquares) > self.pointCountHistory:
+            squaresToDelete = self.drawnedSquares.popleft()
+            if squaresToDelete:
+                for p1, p2, color, thickness in squaresToDelete:
+                    cv2.rectangle(self.overlay, p1, p2, (0, 0, 0), thickness)
 
     def draw_all_personnages(self):
         """Dessin des centres des personnages dans la vue de dessus,
         représenté par un cercle
         """
         # # self.black = np.zeros((720, 1280, 3), dtype = "uint8")
-        
+
+        self._clear_old_graphs()
+
         for perso in self._repo.getCurrentIterationPersonages():
             #print("DEBUG: coord #%d : %s" % (perso.uid, perso.coordinate))
             x = 360 + int(perso.coordinate[0]*160/1000)
@@ -649,27 +704,27 @@ class Personnages3D:
             y = int(perso.coordinate[1]*160/1000)
             # # if y < 0: y = 0
             # # if y > 720: y = 720
-            cv2.circle(self.black, (y, x), 4, (100, 100, 100), -1)
+            #cv2.circle(self.black, (y, x), 3, (100, 100, 100), -1)
+            #self._draw_circle(y, x, 3, (100, 100, 100), -1)
             color = (128,128,128)
             if perso.confirmed:
                 color = COLORS[(perso.uid - 1) % 7]
-            cv2.circle(self.black, (y, x), 3, color, thickness=1)
+            #cv2.circle(self.black, (y, x), 3, color, thickness=1)
+            self._draw_circle(y, x, 3, color, cv2.FILLED)
 
-            rectangleHalfSize = 6
+            rectangleHalfSize = 8
             if perso.kfSmoothedCoordinates is not None:
                 kfSmoothedX = 360 + int(perso.kfSmoothedCoordinates[0]*160/1000)
                 kfSmoothedY = int(perso.kfSmoothedCoordinates[1]*160/1000)
-                p1 = (kfSmoothedY - rectangleHalfSize, kfSmoothedX - rectangleHalfSize)
-                p2 = (kfSmoothedY + rectangleHalfSize, kfSmoothedX + rectangleHalfSize)
-                cv2.rectangle(self.black, p1, p2, color, thickness=2)
+                self._draw_square(kfSmoothedY, kfSmoothedX, rectangleHalfSize, color, 1)
 
-            rectangleHalfSize = 4
-            if perso.kfPredictedCoordinates is not None:
-                kfPredictedX = 360 + int(perso.kfPredictedCoordinates[0]*160/1000)
-                kfPredictedY = int(perso.kfPredictedCoordinates[1]*160/1000)
-                p1 = (kfPredictedY - rectangleHalfSize, kfPredictedX - rectangleHalfSize)
-                p2 = (kfPredictedY + rectangleHalfSize, kfPredictedX + rectangleHalfSize)
-                cv2.rectangle(self.black, p1, p2, color, thickness=1)
+            # rectangleHalfSize = 5
+            # if perso.kfPredictedCoordinates is not None:
+            #     kfPredictedX = 360 + int(perso.kfPredictedCoordinates[0]*160/1000)
+            #     kfPredictedY = int(perso.kfPredictedCoordinates[1]*160/1000)
+            #     self._draw_square(kfPredictedY, kfPredictedX, rectangleHalfSize, color, 1)
+
+        self._complete_drawings()
 
     def run(self):
         """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""
@@ -696,7 +751,10 @@ class Personnages3D:
             else:
                 self.loop = False
 
-            cv2.imshow('vue du dessus', self.black)
+            #cv2.imshow('vue du dessus', self.black)
+            mixedImage = cv2.addWeighted(self.background, 0.5, self.overlay, 1, 0)
+            cv2.imshow('vue du dessus', mixedImage)
+
             self.frame += 1
 
             k = cv2.waitKey(76)
