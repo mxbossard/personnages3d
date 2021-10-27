@@ -117,8 +117,9 @@ class PersonnagesCoordinatesRepo:
 
             print("DEBUG: Coordinates which lead to new personage recording: [%s]." % (coordinates))
 
-        # for perso in self.getAllPersonages():
-        #     if perso.frame != iteration:
-        #         print("DEBUG: One tracked Personnage was not updated: [%s]." % (perso))
-        #         #update2dKF(perso.kf, None)
-        #     # perso.decayFreshness(iteration)
+        for perso in self.getAllPersonages():
+            perso.refreshActivity(iteration)
+            # if perso.frame != iteration:
+            #     print("DEBUG: One tracked Personnage was not updated: [%s]." % (perso))
+            #     #update2dKF(perso.kf, None)
+            # # perso.decayFreshness(iteration)

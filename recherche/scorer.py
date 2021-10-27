@@ -1,18 +1,26 @@
 import numpy as np
 
 from distances import DistanceMatrix, PersonnageDistance
-from config import NOT_CONFIRMED_MALUS_DISTANCE
+from config import MAX_ACTIVITY_SCORE, MAX_HISTORY_SCORE, NOT_CONFIRMED_MALUS_DISTANCE
 from utils import weightedScore
 
 def naive2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    """ Return a small score if 2d distance is small. """
     return dist.cartesianDistance()
 
-def confident2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
-    relativeConfidance = (dist.p2.freshness / matrix.columnsFreshnessSum) + 0.1
-    return dist.cartesianDistance() / relativeConfidance
+def naive2dSpeedScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    """ Return a small score if 2d speed distance is small. """
+    return dist.speedDistance()
 
-def historical2dDistanceScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
-    return dist.cartesianDistance() / (dist.history + 1)
+def historyScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    """ Return a small score if distance history is high. """
+    step = MAX_HISTORY_SCORE / 10
+    # if distance is doubled => add step points
+    return max(0, MAX_HISTORY_SCORE - np.log2(dist.history) * step)
+
+def activityScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
+    """ Return a small score if recent activity is high. """
+    return MAX_ACTIVITY_SCORE * (1 - dist.activity)
 
 def ghostPruner(dist: PersonnageDistance, matrix: DistanceMatrix):
     score = 0
@@ -24,14 +32,13 @@ def ghostPruner(dist: PersonnageDistance, matrix: DistanceMatrix):
 def multidimensionalScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     cartesianDist = naive2dDistanceScorer(dist, matrix)
     ghostScore = ghostPruner(dist, matrix)
-    speedDist = dist.speedDistance()
-    historySize = len(dist.p1.frameHistory) + len(dist.p2.frameHistory)
-    historyScore = max(0, 1000 - np.log2(historySize)*100)
+    speedDist = naive2dSpeedScorer(dist, matrix)
+    historyScore = historyScorer(dist, matrix)
+    activityScore = activityScorer(dist, matrix)
 
-    #score = weightedScore(historyScore, freshnessScore, cartesianDist, speedDist)
-    #score = weightedScore(cartesianDist, speedDist, historyScore, freshnessScore, )
-    score = weightedScore(cartesianDist, speedDist)
-    score += ghostScore
-    #print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} history={historyScore}, freshness={freshnessScore}")
+    score = weightedScore(cartesianDist, speedDist, activityScore, historyScore)
+    #score += ghostScore
+
+    #print(f"DEBUG: score={score} from dist={cartesianDist} speed={speedDist} activity={activityScore} history={historyScore}")
     
     return score

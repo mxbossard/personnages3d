@@ -20,6 +20,7 @@ class PersonnageDistance:
         self.instantDistanceVector = vectorDelta(p1.coordinate, p2.smoothedCoordinatesHistory[0], 1)
         #self.smoothedDistanceVector = vectorDelta(self.p1SmoothedCoordinate, self.p2SmoothedCoordinate, 1)
         self.history = abs(len(p1.frameHistory) - len(p2.frameHistory))
+        self.activity = abs(p1.activity - p2.activity)
         self.color: float = None
 
         # Non symetric distance history: only distance from p1 to p2 history

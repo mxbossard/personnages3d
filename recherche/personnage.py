@@ -1,9 +1,10 @@
 
 
+from collections import deque
 from typing import Mapping, Sequence, Tuple
-from config import MAX_FRAME_TO_CONFIRM_ELSE_GHOST, MAX_MISSING_FRAME_BEFORE_DEAD, MIN_SAMPLE_CONFIRMED_THRESHOLD
+from config import ACTIVITY_HISTORY_SIZE, MAX_FRAME_TO_CONFIRM_ELSE_GHOST, MAX_MISSING_FRAME_BEFORE_DEAD, MIN_SAMPLE_CONFIRMED_THRESHOLD
 from kalman_filter import init2dKalmanFilter, predict2dKF, update2dKF
-from utils import vectorDelta
+from utils import vectorDelta, weightedScore
 
 
 class PersonnageData:
@@ -16,6 +17,8 @@ class PersonnageData:
         self.frameAppearanceCount = 1
         # Score qui indique l'activite recente du personnage. Proche de 0 si peu actif. Proche de 1 si tres actif.
         self.activity = 0
+        # Queue containing 1 for each recent active frame and 0 for each inactive frame
+        self.activityQueue = deque([0] * ACTIVITY_HISTORY_SIZE, maxlen=ACTIVITY_HISTORY_SIZE)
         self.frameHistory = [frame]
         self.coordinatesHistory: Sequence[Tuple[float, float, float]] = [self.coordinate]
         self.smoothedCoordinatesHistory: Sequence[Tuple[float, float, float]] = [self.coordinate]
@@ -72,10 +75,22 @@ class PersonnageData:
                 smoothedAcceleration = vectorDelta(self.smoothedSpeedHistory[0], p.smoothedSpeedHistory[0], frameDelta)
                 self.smoothedAccelerationHistory = [smoothedAcceleration] + p.smoothedAccelerationHistory # insert at list start
 
+            self.activityQueue = p.activityQueue
+
             #FIXME: confirmed based on frame size + not to hold frames
             self.confirmed = len(self.frameHistory) > MIN_SAMPLE_CONFIRMED_THRESHOLD
 
             #print("DEBUG: Perso succession: %s." % (self))
+
+    def refreshActivity(self, iteration):
+        if self.frame == iteration:
+            # Add a 1 in activity queue
+            self.activityQueue.appendleft(1)
+        else:
+            self.activityQueue.appendleft(0)
+        self.activity = weightedScore(*self.activityQueue) # expand list to function args
+        # print("DEBUG: Perso activity: %s." % (self.activityQueue))
+        # print("DEBUG: Perso activity: %f." % (self.activity))
 
     def isAlive(self, iteration):
         notTimeout = iteration - self.frame < MAX_MISSING_FRAME_BEFORE_DEAD

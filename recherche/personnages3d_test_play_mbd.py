@@ -7,16 +7,19 @@ Vous ne devez modifier que ce fichier
 Installation: voir le readme
 
 TODO:
-- Vérifier les calculs de vitesse et d'accélération
-- Forger un vrai bon score de fraicheur/historique
-- Remplacer les smooth coodinates par les prediction du kalman filter   TO_CHECK
-- Square size proportional to uncertainty ?
+- Forger un vrai bon score de activity/historique   DONE
 - Effacer les vieux tracés      DONE
 - Pause/Resume avec espace      DONE
 - Right arrow => pause + one step forward   DONE
 - Change speed with +- keys     DONE
 - Display uid   DONE
+- Display legend of personnages with properties (confirmed, activity, ...)  DONE
+
+- Vérifier les calculs de vitesse et d'accélération
+- Remplacer les smooth coodinates par les prediction du kalman filter   TO_CHECK
+- Implement max history data retained
 - Left arrow => pause - one step backward
+- Square size proportional to uncertainty ???
 
 """
 
@@ -44,11 +47,11 @@ class Personnages3D:
 
         self.json_data = read_json(FICHIER)
 
-        self.pointCountHistory = 60
+        self.displayedPointCountHistory = 60
         self.overlaysCount = 10
 
         self.pause = False
-        self.period = 6
+        self.waitPeriodFactor = 6
 
         # Fenêtre pour la vue du dessus
         cv2.namedWindow('vue du dessus', cv2.WND_PROP_FULLSCREEN)
@@ -75,8 +78,6 @@ class Personnages3D:
         for k in range(0, 1280, int(1000*screenScale)):
             cv2.line(self.background, (k, 0), (k, 720), (255, 255, 255), thickness=1)
 
-        
-
         self.loop = True
         # Numéro de la frame
         self.frame = 0
@@ -89,17 +90,23 @@ class Personnages3D:
     def _get_current_overlay(self):
         return self.overlays[0]
 
-    def _draw_circle(self, coords, radius, color, thickness):
-        overlay = self._get_current_overlay()
-        circle = cv2.circle(overlay, coords, radius, color, thickness)
-        return circle
-
     def _draw_square(self, coords, halfSide, color, thickness):
         overlay = self._get_current_overlay()
         p1 = (coords[0] - halfSide, coords[1] - halfSide)
         p2 = (coords[0] + halfSide, coords[1] + halfSide)
         rect = cv2.rectangle(overlay, p1, p2, color, thickness)
         return rect
+
+    def _draw_perso_stats(self):
+        cv2.rectangle(self.background, (0, 0), (1280, 20), (0, 0, 0), cv2.FILLED)
+        shift = 0
+        for p in self._repo.getAllPersonages():
+            color = (128,128,128)
+            if p.confirmed:
+                color = COLORS[(p.uid - 1) % 7]
+            message=f"#{p.uid} {round(p.activity, 2)}"
+            cv2.putText(self.background, message, (5 + shift, 15), 1, 1, color)
+            shift += 80
 
     def draw_all_personnages(self):
         """Dessin des centres des personnages dans la vue de dessus,
@@ -114,26 +121,30 @@ class Personnages3D:
             if perso.confirmed:
                 color = COLORS[(perso.uid - 1) % 7]
             coords = self._adapt_coordinates(perso.coordinate)
-            cv2.circle(overlay, coords, 3, (100, 100, 100), cv2.FILLED)
-            self._draw_circle(coords, 3, color, 1)
+            #cv2.circle(overlay, coords, 3, (100, 100, 100), cv2.FILLED)
+            cv2.circle(overlay, coords, 2, color, cv2.FILLED)
 
-            rectangleHalfSize = 8
+            rectangleHalfSize = 6
             rectangleBorderSize = 1
             if perso.kfSmoothedCoordinates is not None:
                 coords = self._adapt_coordinates(perso.kfSmoothedCoordinates)
                 rect = self._draw_square(coords, int(rectangleHalfSize), color, rectangleBorderSize)
-                cv2.putText(overlay, str(perso.uid), (coords[0]-rectangleHalfSize-rectangleBorderSize, coords[1]-rectangleHalfSize-rectangleBorderSize-1), 1, 1, color)
+                if len(perso.frameHistory) % 10 == 2:
+                    textCoords = (coords[0]-rectangleHalfSize-rectangleBorderSize, coords[1]-rectangleHalfSize-rectangleBorderSize-1)
+                    cv2.putText(overlay, str(perso.uid), textCoords, 1, 1, color)
 
-            rectangleHalfSize = 5
-            if perso.kfPredictedCoordinates is not None:
-                coords = self._adapt_coordinates(perso.kfPredictedCoordinates)
-                self._draw_square(coords, rectangleHalfSize, color, 1)
+            # rectangleHalfSize = 3
+            # if perso.kfPredictedCoordinates is not None:
+            #     coords = self._adapt_coordinates(perso.kfPredictedCoordinates)
+            #     self._draw_square(coords, rectangleHalfSize, color, 1)
+
+        self._draw_perso_stats()
 
     def run(self):
         """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""
 
         while self.loop:
-            if self.frame % int(self.pointCountHistory / self.overlaysCount) == 0:
+            if self.frame % int(self.displayedPointCountHistory / self.overlaysCount) == 0:
                 # Create new transparent overlay
                 self.overlays.appendleft(self.transparentOverlay.copy())
 
@@ -173,7 +184,7 @@ class Personnages3D:
             if self.pause:
                 self._waitPeriodKeyboardAware(2**30)
             else:
-                self._waitPeriodKeyboardAware(2**self.period)
+                self._waitPeriodKeyboardAware(2**self.waitPeriodFactor)
 
         cv2.destroyAllWindows()
 
@@ -197,11 +208,11 @@ class Personnages3D:
 
             elif k == 45:   # Minus key
                 # Reduce speed
-                self.period = min(self.period+1, 10)
+                self.waitPeriodFactor = min(self.waitPeriodFactor+1, 10)
 
             elif k == 43:   # Plus key
                 # Increase speed
-                self.period = max(self.period-1, 1)
+                self.waitPeriodFactor = max(self.waitPeriodFactor-1, 1)
 
             if k == 27: # Escape key
                 self.loop = False
