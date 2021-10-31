@@ -1,4 +1,4 @@
-
+import json
 from typing import Tuple
 
 
@@ -24,3 +24,47 @@ def weightedScore(*scores: float) -> float:
         weightSum += weight
         scoreSum += score * weight
     return scoreSum / weightSum
+
+
+
+def read_json(fichier):
+    try:
+        with open(fichier) as f:
+            data = json.load(f)
+    except:
+        data = None
+        print("Fichier inexistant ou impossible à lire:")
+    return data
+
+def get_center(points_3D):
+    """Le centre est le centre de vue du dessus,
+    c'est la moyenne des coordonées des points du squelette d'un personnage,
+    sur x et z
+    """
+
+    center = []
+    if points_3D:
+        for i in [0, 2]:
+            center.append(get_moyenne(points_3D, i))
+
+    return center
+
+
+def get_moyenne(points_3D, indice):
+    """Calcul la moyenne d'une coordonnée des points, d'un personnage
+    la profondeur est le 3 ème = z, le y est la verticale
+    indice = 0 pour x, 1 pour y, 2 pour z
+    """
+
+    somme = 0
+    n = 0
+    for i in range(17):
+        if points_3D[i]:
+            n += 1
+            somme += points_3D[i][indice]
+    if n != 0:
+        moyenne = int(somme/n)
+    else:
+        moyenne = None
+
+    return moyenne

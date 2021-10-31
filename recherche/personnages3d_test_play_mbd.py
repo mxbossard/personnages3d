@@ -23,15 +23,20 @@ TODO:
 
 """
 
+import asyncio
+from asyncio.streams import StreamReader, StreamWriter
 from collections import deque
 import json
 from datetime import datetime, timedelta
 from typing import Deque, Mapping, MutableSequence, Sequence, Tuple
 from kalman_filter import *
+import threading
 import numpy as np
 import cv2
 
 from personnage_repo import PersonnagesCoordinatesRepo
+from network_utils import runSkelet3dFileNetPusher, runSkelet3dNetReader
+from utils import get_center
 from scorer import multidimensionalScorer
 
 
@@ -41,11 +46,9 @@ class Personnages3D:
 
     _repo: PersonnagesCoordinatesRepo
 
-    def __init__(self, FICHIER):
+    def __init__(self):
         """Unité = mm"""
         self._repo = PersonnagesCoordinatesRepo(12, multidimensionalScorer)
-
-        self.json_data = read_json(FICHIER)
 
         self.displayedPointCountHistory = 60
         self.overlaysCount = 10
@@ -140,36 +143,25 @@ class Personnages3D:
 
         self._draw_perso_stats()
 
-    def run(self):
-        """Boucle infinie, quitter avec Echap dans la fenêtre OpenCV"""
+    def recordSkelet3D(self, skelet_3D):
+        if self.frame % int(self.displayedPointCountHistory / self.overlaysCount) == 0:
+            # Create new transparent overlay
+            self.overlays.appendleft(self.transparentOverlay.copy())
 
-        while self.loop:
-            if self.frame % int(self.displayedPointCountHistory / self.overlaysCount) == 0:
-                # Create new transparent overlay
-                self.overlays.appendleft(self.transparentOverlay.copy())
+        if skelet_3D:
+            coordinates = []
+            for s in skelet_3D:
+                center = get_center(s)
+                x = center[0]
+                y = center[1]
+                #z = center[2]
+                #print("DEBUG: coord (%f, %f)" % (x, y))
+                coordinates.append((x, y, 0))
 
-            if self.frame < len(self.json_data):
-                skelet_3D = self.json_data[self.frame]
-                #self.main_frame_test(skelet_3D)
-                if skelet_3D:
-                    coordinates = []
-                    for s in skelet_3D:
-                        center = get_center(s)
-                        x = center[0]
-                        y = center[1]
-                        #z = center[2]
-                        #print("DEBUG: coord (%f, %f)" % (x, y))
-                        coordinates.append((x, y, 0))
+            #print("DEBUG: all coordinates [%s]" % coordinates)
+            self._repo.addNewFrameCoordinates(self.frame + 1, coordinates)
 
-                    #print("DEBUG: all coordinates [%s]" % coordinates)
-                    self._repo.addNewFrameCoordinates(self.frame + 1, coordinates)
-
-                    self.draw_all_personnages()
-            else:
-                self.loop = False
-
-            #cv2.imshow('vue du dessus', self.background)
-            #mixedImage = cv2.addWeighted(self.background, 0.5, self.overlay, 1, 0)
+            self.draw_all_personnages()
 
             mixedImage = self.background
             for overlay in self.overlays:
@@ -179,14 +171,20 @@ class Personnages3D:
             # mixedImage = cv2.addWeighted(self.background, 0.5, self.overlays[0], 1, 0)    
             cv2.imshow('vue du dessus', mixedImage)
 
-            self.frame += 1
+        self.frame += 1
 
+    def run(self):
+        while self.loop:
             if self.pause:
                 self._waitPeriodKeyboardAware(2**30)
             else:
                 self._waitPeriodKeyboardAware(2**self.waitPeriodFactor)
 
         cv2.destroyAllWindows()
+
+    async def waitEndLoop(self):
+        while self.loop:
+            await asyncio.sleep(0.1)
 
     def _waitPeriodKeyboardAware(self, periodInMs):
         startTime = datetime.now()
@@ -220,58 +218,37 @@ class Personnages3D:
         return k
 
 
+async def main():
 
-def read_json(fichier):
-    try:
-        with open(fichier) as f:
-            data = json.load(f)
-    except:
-        data = None
-        print("Fichier inexistant ou impossible à lire:")
-    return data
-
-def get_center(points_3D):
-    """Le centre est le centre de vue du dessus,
-    c'est la moyenne des coordonées des points du squelette d'un personnage,
-    sur x et z
-    """
-
-    center = []
-    if points_3D:
-        for i in [0, 2]:
-            center.append(get_moyenne(points_3D, i))
-
-    return center
-
-
-def get_moyenne(points_3D, indice):
-    """Calcul la moyenne d'une coordonnée des points, d'un personnage
-    la profondeur est le 3 ème = z, le y est la verticale
-    indice = 0 pour x, 1 pour y, 2 pour z
-    """
-
-    somme = 0
-    n = 0
-    for i in range(17):
-        if points_3D[i]:
-            n += 1
-            somme += points_3D[i][indice]
-    if n != 0:
-        moyenne = int(somme/n)
-    else:
-        moyenne = None
-
-    return moyenne
-
-
-
-if __name__ == '__main__':
-
-    for i in range(7, 8):
-        FICHIER = './json/cap_' + str(i) + '.json'
-        p3d = Personnages3D(FICHIER)
-        p3d.run()
+    # for i in range(7, 8):
+    #     FICHIER = './json/cap_' + str(i) + '.json'
+    #     p3d = Personnages3D(FICHIER)
+    #     p3d.run()
 
     # FICHIER = './json/cap_7.json'
     # p3d = Personnages3D(FICHIER)
     # p3d.run()
+
+    p3d = Personnages3D()
+
+    def onSkeletonReception(skelet3d):
+        #print(f"received skelet3d: {skelet3d}")
+        p3d.recordSkelet3D(skelet3d)
+
+    thread = threading.Thread(target=p3d.run)
+    thread.start()
+
+    host = 'localhost'
+    port = 55555
+    jsonFile = './json/cap_7.json'
+    await asyncio.gather(
+        p3d.waitEndLoop(),
+        runSkelet3dNetReader(host, port, onSkeletonReception), 
+        runSkelet3dFileNetPusher(host, port, jsonFile, 0.5)
+    )
+
+    # Strop p3d thread
+    p3d.loop = False
+
+if __name__ == '__main__':
+    asyncio.run(main())
