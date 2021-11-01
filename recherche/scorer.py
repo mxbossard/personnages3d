@@ -16,7 +16,7 @@ def historyScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     """ Return a small score if distance history is high. """
     step = MAX_HISTORY_SCORE / 10
     # if distance is doubled => add step points
-    return max(0, MAX_HISTORY_SCORE - np.log2(dist.history) * step)
+    return max(0, MAX_HISTORY_SCORE - np.log2(dist.history + 1) * step)
 
 def activityScorer(dist: PersonnageDistance, matrix: DistanceMatrix):
     """ Return a small score if recent activity is high. """

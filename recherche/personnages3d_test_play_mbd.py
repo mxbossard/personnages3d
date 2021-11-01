@@ -25,6 +25,7 @@ TODO:
 
 import asyncio
 from asyncio.streams import StreamReader, StreamWriter
+from asyncio.tasks import FIRST_COMPLETED
 from collections import deque
 import json
 from datetime import datetime, timedelta
@@ -35,7 +36,7 @@ import numpy as np
 import cv2
 
 from personnage_repo import PersonnagesCoordinatesRepo
-from network_utils import runSkelet3dFileNetPusher, runSkelet3dNetReader
+from network_utils import runSkelet3dFileNetPusher, runSkelet3dNetReader, startNewBackgroundEventLoop
 from utils import get_center
 from scorer import multidimensionalScorer
 
@@ -54,7 +55,7 @@ class Personnages3D:
         self.overlaysCount = 10
 
         self.pause = False
-        self.waitPeriodFactor = 6
+        self.waitPeriodFactor = 0
 
         # Fenêtre pour la vue du dessus
         cv2.namedWindow('vue du dessus', cv2.WND_PROP_FULLSCREEN)
@@ -84,6 +85,9 @@ class Personnages3D:
         self.loop = True
         # Numéro de la frame
         self.frame = 0
+
+        self.newOverlay = False
+        self.mutex = threading.Lock()
 
     def _adapt_coordinates(self, coords):
         x = 360 + int(coords[0]*160/1000)
@@ -141,13 +145,8 @@ class Personnages3D:
             #     coords = self._adapt_coordinates(perso.kfPredictedCoordinates)
             #     self._draw_square(coords, rectangleHalfSize, color, 1)
 
-        self._draw_perso_stats()
 
     def recordSkelet3D(self, skelet_3D):
-        if self.frame % int(self.displayedPointCountHistory / self.overlaysCount) == 0:
-            # Create new transparent overlay
-            self.overlays.appendleft(self.transparentOverlay.copy())
-
         if skelet_3D:
             coordinates = []
             for s in skelet_3D:
@@ -161,32 +160,51 @@ class Personnages3D:
             #print("DEBUG: all coordinates [%s]" % coordinates)
             self._repo.addNewFrameCoordinates(self.frame + 1, coordinates)
 
+        self.frame += 1
+        self.newOverlay = False
+
+    def run(self):
+        while self.loop:
+            #print(f"Personnages3D loop running ...")
+
+            self.mutex.acquire()
+            if not self.newOverlay and self.frame % int(self.displayedPointCountHistory / self.overlaysCount) == 0:
+                # Create new transparent overlay
+                self.overlays.appendleft(self.transparentOverlay.copy())
+                self.newOverlay = True
+            self.mutex.release()
+
+            #print(f"Drawing personnages ...")
             self.draw_all_personnages()
 
+            #print(f"Drawing stats ...")
+            self._draw_perso_stats()
+
+            #print(f"Mixing layers ...")
             mixedImage = self.background
             for overlay in self.overlays:
                 #mixedImage = cv2.addWeighted(mixedImage, 1, overlay, 1, 0)
                 mixedImage = mixedImage + overlay
             
-            # mixedImage = cv2.addWeighted(self.background, 0.5, self.overlays[0], 1, 0)    
+            #print(f"Displaying image ...")
+            # mixedImage = cv2.addWeighted(self.background, 0.5, self.overlays[0], 1, 0)  
             cv2.imshow('vue du dessus', mixedImage)
 
-        self.frame += 1
-
-    def run(self):
-        while self.loop:
             if self.pause:
                 self._waitPeriodKeyboardAware(2**30)
             else:
                 self._waitPeriodKeyboardAware(2**self.waitPeriodFactor)
 
         cv2.destroyAllWindows()
+        
 
-    async def waitEndLoop(self):
+    async def waitLoopEnd(self):
         while self.loop:
-            await asyncio.sleep(0.1)
+            #print(f"Waiting Personnages3D loop to end ...")
+            await asyncio.sleep(0.4)
 
     def _waitPeriodKeyboardAware(self, periodInMs):
+        #print(f"Waiting {periodInMs} ms ...")
         startTime = datetime.now()
         period = timedelta(milliseconds=abs(periodInMs))
         k = None
@@ -210,7 +228,7 @@ class Personnages3D:
 
             elif k == 43:   # Plus key
                 # Increase speed
-                self.waitPeriodFactor = max(self.waitPeriodFactor-1, 1)
+                self.waitPeriodFactor = max(self.waitPeriodFactor-1, 0)
 
             if k == 27: # Escape key
                 self.loop = False
@@ -220,35 +238,26 @@ class Personnages3D:
 
 async def main():
 
-    # for i in range(7, 8):
-    #     FICHIER = './json/cap_' + str(i) + '.json'
-    #     p3d = Personnages3D(FICHIER)
-    #     p3d.run()
-
-    # FICHIER = './json/cap_7.json'
-    # p3d = Personnages3D(FICHIER)
-    # p3d.run()
-
     p3d = Personnages3D()
 
     def onSkeletonReception(skelet3d):
-        #print(f"received skelet3d: {skelet3d}")
+        #print(f"received skelet3d from network: {skelet3d}")
         p3d.recordSkelet3D(skelet3d)
-
-    thread = threading.Thread(target=p3d.run)
-    thread.start()
+        #print(f"finished onSkeletonReception")
 
     host = 'localhost'
     port = 55555
     jsonFile = './json/cap_7.json'
-    await asyncio.gather(
-        p3d.waitEndLoop(),
-        runSkelet3dNetReader(host, port, onSkeletonReception), 
-        runSkelet3dFileNetPusher(host, port, jsonFile, 0.5)
-    )
 
-    # Strop p3d thread
-    p3d.loop = False
+    loop = startNewBackgroundEventLoop()
+
+    futures = [
+        asyncio.run_coroutine_threadsafe(p3d.waitLoopEnd(), loop),
+        asyncio.run_coroutine_threadsafe(runSkelet3dNetReader(host, port, onSkeletonReception), loop),
+        asyncio.run_coroutine_threadsafe(runSkelet3dFileNetPusher(host, port, jsonFile, 0.02), loop),
+    ]
+
+    p3d.run()
 
 if __name__ == '__main__':
     asyncio.run(main())

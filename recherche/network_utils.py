@@ -1,6 +1,7 @@
 import json
 import asyncio
 from asyncio.streams import StreamReader, StreamWriter
+import threading
 
 from utils import read_json
 
@@ -30,7 +31,7 @@ async def runSkelet3dFileNetPusher(host, port, jsonFile, periodInSec):
     """ Read all skelet3d from a json file and push it to a network stream at a specified frequency. """
     writer: StreamWriter
     reader, writer = await build_client(host, port)
-    print(f"Reading json file: {jsonFile}")
+    #print(f"Reading json file: {jsonFile}")
     json_data = read_json(jsonFile)
 
     if json_data and len(json_data) > 0:
@@ -41,6 +42,9 @@ async def runSkelet3dFileNetPusher(host, port, jsonFile, periodInSec):
                 writer.write(data.encode('ascii'))
                 await asyncio.sleep(periodInSec)
 
+    writer.close()
+    reader.close()
+
 def printData(obj):
     print(f"Received object: {obj}")
 
@@ -50,8 +54,20 @@ async def runSkelet3dNetReader(host, port, callback):
         print(f"New client connected")
         while True:
             data = await reader.readline()
-            obj = json.loads(data)
-            callback(obj)
+            if data:
+                obj = json.loads(data)
+                callback(obj)
 
     print("Starting network server")
     await run_server(onConnect, host, port)
+
+
+def startBackgroundLoop(loop: asyncio.AbstractEventLoop) -> None:
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+def startNewBackgroundEventLoop() -> asyncio.AbstractEventLoop:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=startBackgroundLoop, args=(loop,), daemon=True)
+    thread.start()
+    return loop
