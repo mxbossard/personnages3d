@@ -212,7 +212,7 @@ class Personnages3D:
         startTime = datetime.now()
         period = timedelta(milliseconds=abs(periodInMs))
         k = None
-        while startTime + period > datetime.now():
+        while self.loop and startTime + period > datetime.now():
             k = cv2.waitKey(1)
             if k == 32: # Space key
                 self.pause = not self.pause

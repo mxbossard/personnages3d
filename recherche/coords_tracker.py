@@ -10,19 +10,18 @@ import sys
 
 from network_utils import runSkelet3dFileNetPusher, runSkelet3dNetReader, startNewBackgroundEventLoop
 from personnages3d import Personnages3D
-from utils import read_json_file
+from utils import read_json_file, read_json_stream
 
 async def runFileInputTracker(periodInSec, jsonFile):
     print(f"Starting Tracker with file input.", file=sys.stderr)
     p3d = Personnages3D()
 
     async def processFile():
-        while p3d.loop:
-            for skelet3d in read_json_file(jsonFile):
-                print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
-                if p3d.loop:
-                    p3d.recordSkelet3D(skelet3d)
-                await asyncio.sleep(delay=periodInSec)
+        for skelet3d in read_json_file(jsonFile):
+            print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
+            if p3d.loop:
+                p3d.recordSkelet3D(skelet3d)
+            await asyncio.sleep(delay=periodInSec)
 
     loop = startNewBackgroundEventLoop()
 
@@ -36,12 +35,33 @@ async def runFileInputTracker(periodInSec, jsonFile):
 
     p3d.run()
 
+
+async def runStdInInputTracker():
+    print(f"Starting Tracker with stdin as input.", file=sys.stderr)
+    p3d = Personnages3D()
+
+    async def processFile():
+        while p3d.loop:
+            for skelet3d in read_json_stream(sys.stdin):
+                print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
+                if p3d.loop:
+                    p3d.recordSkelet3D(skelet3d)
+                await asyncio.sleep(delay=periodInSec)
+
+    loop = startNewBackgroundEventLoop()
+
+    asyncio.run_coroutine_threadsafe(processFile(), loop)
+
+    p3d.run()
+
+
 async def runNetworkInputTracker(host, port):
     print(f"Starting Tracker with network input.", file=sys.stderr)
     p3d = Personnages3D()
 
     def onSkeletonReception(skelet3d):
         if p3d.loop:
+            print(f"Received network input: {skelet3d}", file=sys.stderr)
             p3d.recordSkelet3D(skelet3d)
 
     loop = startNewBackgroundEventLoop()
@@ -67,10 +87,11 @@ if __name__ == '__main__':
     periodInSec = args.period
     textFile = args.file
 
-    if textFile == "-":
-        textFile = sys.stdin
-
     if args.network:
         asyncio.run(runNetworkInputTracker(host, port))
+    
+    elif textFile == "-":
+        asyncio.run(runStdInInputTracker())
+
     else:
         asyncio.run(runFileInputTracker(periodInSec, textFile))

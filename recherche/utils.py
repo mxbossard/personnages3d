@@ -1,5 +1,6 @@
 import io
 import json
+from json.decoder import JSONDecodeError
 import sys
 from typing import Tuple
 import typing
@@ -28,20 +29,47 @@ def weightedScore(*scores: float) -> float:
         scoreSum += score * weight
     return scoreSum / weightSum
 
+def read_json_stream(fichier):
+    print(f"Attempting to read json stream from file: {fichier}", file=sys.stderr)
+    data = None
+    lines = None
+    if type(fichier) == str:
+        with open(fichier) as f:
+            lines = f.readlines()
+    elif isinstance(fichier, io.IOBase):
+        lines = fichier.readlines()
 
+    if lines:
+        data = [ json.loads(line) for line in lines ]
+    
+    print(f"Finished reading json stream from file: {fichier}", file=sys.stderr)
+
+    return data
 
 def read_json_file(fichier):
     data = None
     try:
         if type(fichier) == str:
-            print(f"Reading json file: {fichier}", file=sys.stderr)
+            print(f"Attempting read all json file: {fichier}", file=sys.stderr)
             with open(fichier) as f:
-                data = json.load(f)
+                try:
+                    # Try to load all file
+                    data = json.load(f)
+                except JSONDecodeError as e:
+                    # Error decoding, the file may be a json stream
+                    data = read_json_stream(fichier)
+                
         elif isinstance(fichier, io.IOBase):
-            print(f"Reading json file from stdin", file=sys.stderr)
-            data = json.load(fichier)
+            print(f"Attempting to real all json file from stdin", file=sys.stderr)
+            try:
+                # Try to load all file
+                data = json.load(fichier)
+            except JSONDecodeError as e:
+                # Error decoding, the file may be a json stream
+                data = read_json_stream(fichier)
         else:
             raise Exception(f"Unable to read file {fichier}")
+
     except Exception as e:
         print("Fichier inexistant ou impossible à lire: %s" % e)
     return data
