@@ -29,6 +29,7 @@ from asyncio.tasks import FIRST_COMPLETED
 from collections import deque
 import json
 from datetime import datetime, timedelta
+import sys
 from typing import Deque, Mapping, MutableSequence, Sequence, Tuple
 from kalman_filter import *
 import threading
@@ -147,21 +148,24 @@ class Personnages3D:
 
 
     def recordSkelet3D(self, skelet_3D):
-        if skelet_3D:
-            coordinates = []
-            for s in skelet_3D:
-                center = get_center(s)
-                x = center[0]
-                y = center[1]
-                #z = center[2]
-                #print("DEBUG: coord (%f, %f)" % (x, y))
-                coordinates.append((x, y, 0))
+        try:
+            if skelet_3D:
+                coordinates = []
+                for s in skelet_3D:
+                    center = get_center(s)
+                    x = center[0]
+                    y = center[1]
+                    #z = center[2]
+                    #print("DEBUG: coord (%f, %f)" % (x, y))
+                    coordinates.append((x, y, 0))
 
-            #print("DEBUG: all coordinates [%s]" % coordinates)
-            self._repo.addNewFrameCoordinates(self.frame + 1, coordinates)
+                #print("DEBUG: all coordinates [%s]" % coordinates)
+                self._repo.addNewFrameCoordinates(self.frame + 1, coordinates)
 
-        self.frame += 1
-        self.newOverlay = False
+            self.frame += 1
+            self.newOverlay = False
+        except Exception as e:
+            print(f"Unable to add coordinates: [{skelet_3D}] ! Error was: {e}", file=sys.stderr)
 
     def run(self):
         while self.loop:
@@ -234,30 +238,3 @@ class Personnages3D:
                 self.loop = False
                 break
         return k
-
-
-async def main():
-
-    p3d = Personnages3D()
-
-    def onSkeletonReception(skelet3d):
-        #print(f"received skelet3d from network: {skelet3d}")
-        p3d.recordSkelet3D(skelet3d)
-        #print(f"finished onSkeletonReception")
-
-    host = 'localhost'
-    port = 55555
-    jsonFile = './json/cap_7.json'
-
-    loop = startNewBackgroundEventLoop()
-
-    futures = [
-        asyncio.run_coroutine_threadsafe(p3d.waitLoopEnd(), loop),
-        asyncio.run_coroutine_threadsafe(runSkelet3dNetReader(host, port, onSkeletonReception), loop),
-        asyncio.run_coroutine_threadsafe(runSkelet3dFileNetPusher(host, port, jsonFile, 0.02), loop),
-    ]
-
-    p3d.run()
-
-if __name__ == '__main__':
-    asyncio.run(main())

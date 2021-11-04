@@ -1,5 +1,8 @@
+import io
 import json
+import sys
 from typing import Tuple
+import typing
 
 
 def vectorNorme(vector: Tuple[float, float, float]) -> float:
@@ -27,14 +30,22 @@ def weightedScore(*scores: float) -> float:
 
 
 
-def read_json(fichier):
+def read_json_file(fichier):
+    data = None
     try:
-        with open(fichier) as f:
-            data = json.load(f)
-    except:
-        data = None
-        print("Fichier inexistant ou impossible à lire:")
+        if type(fichier) == str:
+            print(f"Reading json file: {fichier}", file=sys.stderr)
+            with open(fichier) as f:
+                data = json.load(f)
+        elif isinstance(fichier, io.IOBase):
+            print(f"Reading json file from stdin", file=sys.stderr)
+            data = json.load(fichier)
+        else:
+            raise Exception(f"Unable to read file {fichier}")
+    except Exception as e:
+        print("Fichier inexistant ou impossible à lire: %s" % e)
     return data
+
 
 def get_center(points_3D):
     """Le centre est le centre de vue du dessus,
