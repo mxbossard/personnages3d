@@ -30,19 +30,23 @@ def weightedScore(*scores: float) -> float:
     return scoreSum / weightSum
 
 def read_json_stream(fichier):
-    print(f"Attempting to read json stream from file: {fichier}", file=sys.stderr)
+    #print(f"Attempting to read json stream from file: {fichier}", file=sys.stderr)
     data = None
     lines = None
     if type(fichier) == str:
         with open(fichier) as f:
             lines = f.readlines()
     elif isinstance(fichier, io.IOBase):
-        lines = fichier.readlines()
+        #print(f"Reading stdin ...", file=sys.stderr)
+        lines = [fichier.readline()]
+        #print(f"Done reading stdin: {lines}.", file=sys.stderr)
+    else:
+        raise Exception("Unable to read json stream !")
 
     if lines:
         data = [ json.loads(line) for line in lines ]
     
-    print(f"Finished reading json stream from file: {fichier}", file=sys.stderr)
+    #print(f"Finished reading json stream from file: {fichier}", file=sys.stderr)
 
     return data
 

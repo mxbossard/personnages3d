@@ -18,7 +18,7 @@ async def runFileInputTracker(periodInSec, jsonFile):
 
     async def processFile():
         for skelet3d in read_json_file(jsonFile):
-            print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
+            #print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
             if p3d.loop:
                 p3d.recordSkelet3D(skelet3d)
             await asyncio.sleep(delay=periodInSec)
@@ -43,7 +43,7 @@ async def runStdInInputTracker():
     async def processFile():
         while p3d.loop:
             for skelet3d in read_json_stream(sys.stdin):
-                print(f"Recording skelet3d from file: {skelet3d}", file=sys.stderr)
+                #print(f"Recording skelet3d from stdin: {skelet3d}", file=sys.stderr)
                 if p3d.loop:
                     p3d.recordSkelet3D(skelet3d)
                 await asyncio.sleep(delay=periodInSec)
@@ -61,7 +61,7 @@ async def runNetworkInputTracker(host, port):
 
     def onSkeletonReception(skelet3d):
         if p3d.loop:
-            print(f"Received network input: {skelet3d}", file=sys.stderr)
+            #print(f"Received network input: {skelet3d}", file=sys.stderr)
             p3d.recordSkelet3D(skelet3d)
 
     loop = startNewBackgroundEventLoop()
