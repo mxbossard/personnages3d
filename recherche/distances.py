@@ -1,5 +1,7 @@
 import copy
 from functools import cmp_to_key
+import sys
+import time
 from types import FunctionType
 from typing import Mapping, MutableSequence, Sequence
 
@@ -7,6 +9,8 @@ from config import ABSOLUTE_MAXIMUM_INSTANT_ACCELERATION, ABSOLUTE_MAXIMUM_INSTA
 from personnage import PersonnageData
 from utils import vectorDelta, vectorNorme
 
+
+SLOW_TIME_IN_MS = 20
 
 class PersonnageDistance:
 
@@ -44,13 +48,10 @@ class PersonnageDistance:
         return f"[Distance vector={self.instantDistanceVector} norme={self.cartesianDistance()}]"
 
     def isPossible(self) -> bool:
+        """ If a distance is not possible it will not be used for further computations. """
+
         if self.frame == 0:
             return False
-
-        # A distance is possible if distance and speed are maxed + if acceleration is maxed
-        # isPossible = abs(vectorNorme(self.smoothedSpeedVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_SPEED and abs(vectorNorme(self.smoothedDistanceVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_DISTANCE
-        # if self.smoothedAccelerationVector is not None:
-        #     return isPossible and abs(vectorNorme(self.smoothedAccelerationVector)) < ABSOLUTE_MAXIMUM_SMOOTHED_ACCELERATION
 
         isPossible = abs(vectorNorme(self.instantSpeedVector)) < ABSOLUTE_MAXIMUM_INSTANT_SPEED and abs(vectorNorme(self.instantDistanceVector)) < ABSOLUTE_MAXIMUM_INSTANT_DISTANCE
         if self.instantAccelerationVector is not None:
@@ -72,21 +73,6 @@ class PersonnageDistance:
              ancestorAccelerationVector = self.p2.smoothedAccelerationHistory[0]
         return vectorNorme(vectorDelta(self.instantAccelerationVector, ancestorAccelerationVector, self.frame))
 
-    # Deprecated
-    def historicalCartesianDistance(self) -> float:
-        historySize = len(self.instantDistanceVector)
-        cartesianDistSum = 0
-        weightSum = 0
-        for k in range(len(self.distanceVectorHistory)):
-            weight = -2*k/((historySize + 1)**2) + 2/(historySize + 1)
-            weightSum += weight
-            cartesianDistance = vectorNorme(self.distanceVectorHistory[k])
-            cartesianDistSum += cartesianDistance * weight
-
-        #print("DEBUG: historySize=%d weightSum=%f historical cartesian dist=%f" % (historySize, weightSum, cartesianDistSum))
-        if weightSum == 0:
-            return cartesianDistSum
-        return cartesianDistSum / weightSum
 
 class DistanceMatrix:
 
@@ -94,6 +80,8 @@ class DistanceMatrix:
         self.__matrix: Mapping[int, Mapping[int, PersonnageDistance]] = {}
         self.__allDistances: MutableSequence[PersonnageDistance] = []
         self.__sortedDistances = False
+        self.rowsCount = len(rows)
+        self.colsCount = len(columns)
 
         freshnessSumPa = 1
         # for pA in rows:
@@ -118,6 +106,8 @@ class DistanceMatrix:
 
         self.__distanceComparator = distanceScoreComparator
 
+    def __str__(self) -> str:
+        return f"[DistanceMatrix {self.rowsCount}x{self.colsCount}]"
 
     def clone(self):
         clone = copy.copy(self) # shallow copy
@@ -166,6 +156,10 @@ class DistanceMatrix:
         #print("DEBUG: reduced matrix contains %d distance(s) in %d row(s) ..." % (len(clone.__allDistances), len(clone.__matrix)))
         if len(clone.__allDistances) == 0:
             return None
+
+        clone.rowsCount -= 1
+        clone.colsCount -= 1
+
         return clone
 
     def reduceMatrix(self, distance: PersonnageDistance):
@@ -173,7 +167,7 @@ class DistanceMatrix:
 
 
 class DistancePathIterator:
-    """ Iterate over a DistanceMatrix returning possibles distance pathes """
+    """ Iterate over a DistanceMatrix returning possibles distance pathes. """
 
     # Path schemes: take all first minimal distances
     # All pathes for a 3x3 matrix are :
@@ -246,13 +240,42 @@ class DistancePathIterator:
         self.currentPathScheme[0] += 1
         return distancePath
 
+
+def naiveMinimalDistancePathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData], distanceScorer: FunctionType) -> Sequence[PersonnageDistance]:
+    """ Alway return the first minimal path: [0, 0, 0, ..., 0]. """
+    start = time.perf_counter()
+    
+    fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
+    distancePath = []
+
+    matrix = fullDistanceMatrix
+    while matrix is not None:
+        distance = matrix.getNthMinimalDistance(0)
+        if distance:
+            distancePath.append(distance)
+            matrix = matrix.reduceMatrix(distance)
+        else:
+            break
+
+    end = time.perf_counter()
+    durationInMs = (end - start) * 1000
+    if durationInMs > SLOW_TIME_IN_MS:
+        print(f"DEBUG: SLOW computing of minimal distance in naiveMinimalDistancePathFinder. "
+            + f"Processed {fullDistanceMatrix} in {durationInMs} ms.", file=sys.stderr)
+
+    return distancePath
+
 def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData], distanceScorer: FunctionType) -> Sequence[PersonnageDistance]:
+    start = time.perf_counter()
+    
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     minimalDistancePath = None
     minimalDistanceScore = None
     matrixIterator = DistancePathIterator(fullDistanceMatrix)
+    n = 0
     for distancePath in matrixIterator:
+        n += 1
         #print("DEBUG: Exploring path: %s." % (distancePath))
         distanceScore = 0
         for distance in distancePath:
@@ -266,6 +289,12 @@ def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], pers
 
     if minimalDistancePath is None:
         minimalDistancePath = []
+
+    end = time.perf_counter()
+    durationInMs = (end - start) * 1000
+    if durationInMs > SLOW_TIME_IN_MS:
+        print(f"DEBUG: SLOW computing of minimal distance in minimalDistanceOverallPathFinder2. "
+             + f"Processed {fullDistanceMatrix} in {durationInMs} ms (explored {n} path).", file=sys.stderr)
 
     #print("DEBUG: Minimal distance path found: %s" % ' '.join([ str(x) for x in minimalDistancePath ]))
     return minimalDistancePath

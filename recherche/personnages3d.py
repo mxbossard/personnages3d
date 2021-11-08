@@ -30,6 +30,7 @@ from collections import deque
 import json
 from datetime import datetime, timedelta
 import sys
+import traceback
 from typing import Deque, Mapping, MutableSequence, Sequence, Tuple
 from kalman_filter import *
 import threading
@@ -166,6 +167,10 @@ class Personnages3D:
             self.newOverlay = False
         except Exception as e:
             print(f"Unable to add coordinates: [{skelet_3D}] ! Error was: {e}", file=sys.stderr)
+            traceback.print_exc()
+
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     def run(self):
         while self.loop:

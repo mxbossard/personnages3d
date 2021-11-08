@@ -2,7 +2,7 @@
 
 from types import FunctionType
 from typing import Mapping, Sequence, Tuple
-from distances import minimalDistanceOverallPathFinder2
+from distances import minimalDistanceOverallPathFinder2, naiveMinimalDistancePathFinder
 from personnage import PersonnageData
 
 class PersonnagesCoordinatesRepo:
@@ -100,7 +100,9 @@ class PersonnagesCoordinatesRepo:
         #previousPersos = self._getIterationPersonnageData(iteration - k)
         previousPersos = self.getAllPersonages()
 
-        betterPath = minimalDistanceOverallPathFinder2(newPersos, previousPersos, self.scorer)
+        #betterPath = minimalDistanceOverallPathFinder2(newPersos, previousPersos, self.scorer)
+        betterPath = naiveMinimalDistancePathFinder(newPersos, previousPersos, self.scorer)
+
         for dist in betterPath:
             newPerso = dist.p1
             previousPerso = dist.p2
