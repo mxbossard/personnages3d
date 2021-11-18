@@ -54,9 +54,6 @@ def main():
     periodInSec = args.period
     skeletonCount = args.count
 
-    if len(sys.argv) > 1:
-        skeletonCount = int(sys.argv[1])
-    
     while True:
         skeletons = []
         for i in range(0, skeletonCount):

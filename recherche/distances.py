@@ -240,17 +240,81 @@ class DistancePathIterator:
         self.currentPathScheme[0] += 1
         return distancePath
 
-class ScoreAwareDistancePathIterator:
-    """ Wrapper around DistancePathIterator cutting computing if score is bad. """
+class LimitedDistancePathIterator:
+    """ Iterate over a DistanceMatrix returning all possible pathes. 
+        Can take limits to explore only smallest branches. """
+
+    def limit(self, pathIndex):
+        """ Stop exploring after the limit. """
+        limit = max(0, self.currentPathScheme[pathIndex] - 1)
+        #print(f"DEBUG: Limiting iterator to: {limit} for pathIndex: {pathIndex}.")
+        self.pathIndexLimits[pathIndex] = limit
 
     def __init__(self, matrix: DistanceMatrix) -> None:
-        self.__back = DistancePathIterator(matrix)
+        self.matrix = matrix
+        self.currentPathScheme = [0]
+        self.pathIndexLimits = {}
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        return self.__back.__next__()
+        distancePath = []
+        currentDistanceMatrix = self.matrix
+        currentPathIndex = 0
+
+        #print("DEBUG: currentPathIndex=%d currentPathScheme=%s." % (currentPathIndex, str(self.currentPathScheme)))
+
+        # First iteration
+        while True:
+            n = self.currentPathScheme[currentPathIndex]
+            dist = None
+
+            limit = self.pathIndexLimits.get(currentPathIndex, None)
+            if limit is None or n <= limit:
+                # Get distance only if n <= limit
+                dist = currentDistanceMatrix.getNthMinimalDistance(n)
+
+            if n == 0 and dist is None:
+                # Empty matrix
+                #print("DEBUG: Empty Matrix.")
+                raise StopIteration
+            if dist is None:
+                # Done exploring currentPathIndex
+                if len(self.currentPathScheme) > currentPathIndex + 1:
+                    # We can propagate the carry
+                    #print("DEBUG: Carry propagation.")
+                    self.currentPathScheme[currentPathIndex] = 0
+                    self.currentPathScheme[currentPathIndex+1] += 1
+                else:
+                    # Cannot propagate the carry => end of iteration
+                    #print("DEBUG: End of iteration with last path: [%s]." % (str(self.currentPathScheme)))
+                    raise StopIteration
+                continue
+            else:
+                # Found a distance. Increment currentPathIndex
+                distancePath.append(dist)
+
+                currentPathIndex += 1
+                currentDistanceMatrix = currentDistanceMatrix.reduceMatrix(dist)
+                if currentDistanceMatrix is None:
+                    # Done exploring current path
+                    #print("DEBUG: End exploring path.")
+                    break
+                else:
+                    #print("DEBUG: Exploring reduced matrix.")
+                    # A reduce matrix need to be explored
+                    if currentPathIndex == len(self.currentPathScheme):
+                        # We need to add next distance path in scheme initialized with 0
+                        #print("DEBUG: Appending new scheme level.")
+                        self.currentPathScheme.append(0)
+            #print("DEBUG: infinite loop.")
+        
+        #print("DEBUG: DistancePathIterator path: [%s] => distances: [%s]." % (str(self.currentPathScheme), str(distancePath)))
+
+        self.currentPathScheme[0] += 1
+        return distancePath
+
 
 def naiveMinimalDistancePathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData], distanceScorer: FunctionType) -> Sequence[PersonnageDistance]:
     """ Alway return the first minimal path: [0, 0, 0, ..., 0]. """
@@ -278,25 +342,36 @@ def naiveMinimalDistancePathFinder(persoListA: Sequence[PersonnageData], persoLi
 
 def minimalDistanceOverallPathFinder2(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData], distanceScorer: FunctionType) -> Sequence[PersonnageDistance]:
     start = time.perf_counter()
+    intermediate = start
     
     fullDistanceMatrix = DistanceMatrix(persoListA, persoListB, distanceScorer)
 
     minimalDistancePath = None
     minimalDistanceScore = None
-    matrixIterator = DistancePathIterator(fullDistanceMatrix)
+    matrixIterator = LimitedDistancePathIterator(fullDistanceMatrix)
     n = 0
     for distancePath in matrixIterator:
         n += 1
         #print("DEBUG: Exploring path: %s." % (distancePath))
         distanceScore = 0
-        for distance in distancePath:
+        for (index, distance) in enumerate(distancePath):
             score = distanceScorer(distance, fullDistanceMatrix)
             distanceScore += score
+            if minimalDistanceScore is not None and score * (len(distancePath) * 3 / 4) > minimalDistanceScore:
+                matrixIterator.limit(index)
 
         if minimalDistanceScore is None or minimalDistanceScore > distanceScore:
             #print("DEBUG: Found new minimal path score: %f." % (currentDistanceScore))
             minimalDistancePath = distancePath
             minimalDistanceScore = distanceScore
+
+        end = time.perf_counter()
+        durationInMs = (end - intermediate) * 1000
+        if durationInMs > 2000:
+            intermediate = end
+            durationInMs = (end - start) * 1000
+            print(f"DEBUG: SLOW computing of minimal distance in minimalDistanceOverallPathFinder2 in progress ... "
+                + f"Processing {fullDistanceMatrix} since {durationInMs} ms (explored {n} path).", file=sys.stderr)
 
     if minimalDistancePath is None:
         minimalDistancePath = []

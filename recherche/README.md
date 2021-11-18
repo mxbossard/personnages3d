@@ -59,3 +59,13 @@ Appliquer un squelette à la même personne, cela se traduit par une couleur con
 ### Des idées en l'air
 * Plutot que de créer un historique, il faudrait deviner la suite des points probable
 * Faire un recherche avec une distance de plus en plus grande.
+
+### Tracking des personnages
+
+#### Scripts
+- python random_coords_generator.py --period 0.1 5
+- python coords_tracker.py
+
+- python random_coords_generator.py --period 0.1 5 | python coords_tracker.py -
+
+- python random_coords_generator.py --period 0.1 5 | python coords_tracker.py - | grep SLOW

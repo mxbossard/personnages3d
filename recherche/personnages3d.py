@@ -40,7 +40,7 @@ import cv2
 from personnage_repo import PersonnagesCoordinatesRepo
 from network_utils import runSkelet3dFileNetPusher, runSkelet3dNetReader, startNewBackgroundEventLoop
 from utils import get_center
-from scorer import multidimensionalScorer
+from scorer import multidimensionalScorer, naive2dDistanceScorer
 
 
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 255), (255, 0, 0), (0, 255, 255), (255, 255, 255), (0, 0, 127), (0, 127, 0), (127, 127, 0), (127, 0, 127), (127, 0, 0), (0, 127, 127), (127, 127, 127)]
@@ -52,6 +52,7 @@ class Personnages3D:
     def __init__(self):
         """Unité = mm"""
         self._repo = PersonnagesCoordinatesRepo(12, multidimensionalScorer)
+        #self._repo = PersonnagesCoordinatesRepo(12, naive2dDistanceScorer)
 
         self.displayedPointCountHistory = 60
         self.overlaysCount = 10
