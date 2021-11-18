@@ -167,7 +167,7 @@ class DistanceMatrix:
 
 
 class DistancePathIterator:
-    """ Iterate over a DistanceMatrix returning possibles distance pathes. """
+    """ Iterate over a DistanceMatrix returning all possibles distance pathes. """
 
     # Path schemes: take all first minimal distances
     # All pathes for a 3x3 matrix are :
@@ -240,6 +240,17 @@ class DistancePathIterator:
         self.currentPathScheme[0] += 1
         return distancePath
 
+class ScoreAwareDistancePathIterator:
+    """ Wrapper around DistancePathIterator cutting computing if score is bad. """
+
+    def __init__(self, matrix: DistanceMatrix) -> None:
+        self.__back = DistancePathIterator(matrix)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.__back.__next__()
 
 def naiveMinimalDistancePathFinder(persoListA: Sequence[PersonnageData], persoListB: Sequence[PersonnageData], distanceScorer: FunctionType) -> Sequence[PersonnageDistance]:
     """ Alway return the first minimal path: [0, 0, 0, ..., 0]. """

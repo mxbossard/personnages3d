@@ -100,8 +100,8 @@ class PersonnagesCoordinatesRepo:
         #previousPersos = self._getIterationPersonnageData(iteration - k)
         previousPersos = self.getAllPersonages()
 
-        #betterPath = minimalDistanceOverallPathFinder2(newPersos, previousPersos, self.scorer)
-        betterPath = naiveMinimalDistancePathFinder(newPersos, previousPersos, self.scorer)
+        betterPath = minimalDistanceOverallPathFinder2(newPersos, previousPersos, self.scorer)
+        #betterPath = naiveMinimalDistancePathFinder(newPersos, previousPersos, self.scorer)
 
         for dist in betterPath:
             newPerso = dist.p1
